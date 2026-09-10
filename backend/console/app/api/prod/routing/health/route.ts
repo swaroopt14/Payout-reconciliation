@@ -12,12 +12,11 @@ export const runtime = 'nodejs'
 export async function GET(request: NextRequest) {
   const gate = await requireSessionTenantForProdProxy(request)
   if (!gate.ok) return gate.response
-  const tenantId = gate.tenantId
-  const url = routerUrl('PROCESSORS')
+  const url = routerUrl('HEALTH')
   try {
     const upstream = await fetch(url, {
       method: 'GET',
-      headers: { 'x-tenant-id': tenantId },
+      headers: { 'x-tenant-id': gate.tenantId },
       cache: 'no-store',
     })
     const text = await upstream.text()

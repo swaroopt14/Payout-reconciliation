@@ -162,4 +162,26 @@ mod tests {
         s = record(s, false, true, &policy, 10 + 30);
         assert_eq!(s.state, Circuit::Closed);
     }
+
+    #[test]
+    fn hard_declines_do_not_open_circuit() {
+        let policy = CircuitPolicy::default();
+        let mut s = CircuitState::closed(Psp::Razorpay);
+        for _ in 0..8 {
+            s = record(s, false, false, &policy, 1);
+        }
+        assert_eq!(s.state, Circuit::Closed);
+        assert!(!is_open(&s, &policy, 1));
+    }
+
+    #[test]
+    fn half_open_infra_failure_reopens() {
+        let policy = CircuitPolicy::default();
+        let mut s = CircuitState::closed(Psp::Payu);
+        for _ in 0..5 {
+            s = record(s, true, false, &policy, 10);
+        }
+        s = record(s, true, false, &policy, 10 + 30);
+        assert_eq!(s.state, Circuit::Open);
+    }
 }

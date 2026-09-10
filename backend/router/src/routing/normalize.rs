@@ -52,6 +52,8 @@ pub fn parse_rail(raw: Option<&str>) -> Option<Rail> {
         "IMPS" => Some(Rail::Imps),
         "NEFT" => Some(Rail::Neft),
         "RTGS" => Some(Rail::Rtgs),
+        // CSV `beneficiary.instrument.kind=BANK` is an India bank payout, not a collect rail.
+        "BANK" | "BANK_ACCOUNT" | "BANKACCOUNT" => Some(Rail::Imps),
         "BANK_TRANSFER" | "BANKTRANSFER" => Some(Rail::BankTransfer),
         "EMI" | "CARDLESS_EMI" => Some(Rail::Emi),
         "PAYLATER" => Some(Rail::Paylater),
@@ -87,4 +89,69 @@ pub fn rewrite_rail(req: &mut NormalizedRequest) -> Option<Rail> {
         return Some(from);
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::Direction;
+
+    fn base() -> RouteRequest {
+        RouteRequest {
+            tenant_id: None,
+            merchant_id: None,
+            entity_id: Some("pay_1".into()),
+            payment_id: None,
+            direction: Some(Direction::Outbound),
+            rail: Some(Rail::Imps),
+            payment_method: None,
+            card_network: None,
+            amount_minor: Some(10_000),
+            amount: None,
+            currency: "INR".into(),
+            country: Some("IN".into()),
+            ml_score: None,
+        }
+    }
+
+    #[test]
+    fn missing_id_is_rejected() {
+        let mut req = base();
+        req.entity_id = None;
+        req.payment_id = None;
+        assert!(normalize(req).unwrap_err().contains("required"));
+    }
+
+    #[test]
+    fn bank_kind_aliases_to_imps() {
+        assert_eq!(parse_rail(Some("BANK")), Some(Rail::Imps));
+        assert_eq!(parse_rail(Some("bank_account")), Some(Rail::Imps));
+        assert_eq!(parse_rail(Some("upi")), Some(Rail::Upi));
+        assert_eq!(parse_rail(Some("nb")), Some(Rail::Netbanking));
+        assert_eq!(parse_rail(Some("WALLET")), Some(Rail::Wallet));
+        assert_eq!(parse_rail(Some("garbage")), None);
+    }
+
+    #[test]
+    fn rewrite_thresholds() {
+        let mut n = normalize(base()).unwrap();
+        n.amount_minor = 19_999_999;
+        assert_eq!(rewrite_rail(&mut n), None);
+        assert_eq!(n.rail, Rail::Imps);
+
+        n.amount_minor = 20_000_000;
+        assert_eq!(rewrite_rail(&mut n), Some(Rail::Imps));
+        assert_eq!(n.rail, Rail::Neft);
+
+        let mut n = normalize(base()).unwrap();
+        n.amount_minor = 50_000_000;
+        assert_eq!(rewrite_rail(&mut n), Some(Rail::Imps));
+        assert_eq!(n.rail, Rail::Rtgs);
+
+        let mut n = normalize(base()).unwrap();
+        n.rail = Rail::Neft;
+        n.amount_minor = 80_000_000;
+        assert_eq!(rewrite_rail(&mut n), None);
+        assert_eq!(n.rail, Rail::Neft);
+    }
 }

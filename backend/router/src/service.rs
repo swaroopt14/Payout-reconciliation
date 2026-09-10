@@ -149,6 +149,7 @@ impl AppState {
             t.counts_toward_circuit,
             req.latency_ms,
             &self.circuit_policy,
+            t.merchant_action,
         );
         let metrics = snap.metrics.get(&psp).cloned();
         let source = snap.source.clone();
@@ -303,5 +304,74 @@ mod tests {
         let d = state.decide(payout("pout_after_cb"), None).await.unwrap();
         assert_eq!(d.psp, Psp::Cashfree);
         assert!(d.open_circuits.contains(&Psp::Razorpay));
+    }
+
+    #[tokio::test]
+    async fn hard_declines_keep_razorpay_in_pool() {
+        let state = AppState::memory_only(Config::from_env());
+        for i in 0..6 {
+            let res = state
+                .record_outcome(OutcomeRequest {
+                    routing_id: Some(format!("rte_hd_{i}")),
+                    payment_id: format!("pout_hd_{i}"),
+                    processor: "razorpay".into(),
+                    success: false,
+                    latency_ms: Some(120.0),
+                    failure_class: Some("HARD_DECLINE".into()),
+                    failure_detail: None,
+                })
+                .await
+                .unwrap();
+            assert_eq!(res.circuit_state, "closed");
+            assert!(!res.triage.counts_toward_circuit);
+            assert!(res.triage.use_fallback);
+        }
+        let d = state.decide(payout("pout_after_hd"), None).await.unwrap();
+        assert!(
+            !d.open_circuits.contains(&Psp::Razorpay),
+            "hard declines must not open the circuit: {:?}",
+            d.open_circuits
+        );
+        assert_eq!(d.psp, Psp::Cashfree, "auth EWMA should fail over without a circuit trip");
+    }
+
+    #[tokio::test]
+    async fn insufficient_funds_does_not_fail_over_the_processor() {
+        let state = AppState::memory_only(Config::from_env());
+        let res = state
+            .record_outcome(OutcomeRequest {
+                routing_id: Some("rte_funds".into()),
+                payment_id: "pout_funds".into(),
+                processor: "razorpay".into(),
+                success: false,
+                latency_ms: Some(90.0),
+                failure_class: Some("INSUFFICIENT_FUNDS".into()),
+                failure_detail: None,
+            })
+            .await
+            .unwrap();
+        assert!(res.triage.merchant_action);
+        assert!(!res.triage.use_fallback);
+        assert_eq!(res.circuit_state, "closed");
+        let d = state.decide(payout("pout_after_funds"), None).await.unwrap();
+        assert_eq!(d.psp, Psp::Razorpay);
+    }
+
+    #[tokio::test]
+    async fn unknown_processor_outcome_is_rejected() {
+        let state = AppState::memory_only(Config::from_env());
+        let err = state
+            .record_outcome(OutcomeRequest {
+                routing_id: None,
+                payment_id: "pout_x".into(),
+                processor: "adyen".into(),
+                success: false,
+                latency_ms: None,
+                failure_class: Some("TIMEOUT".into()),
+                failure_detail: None,
+            })
+            .await
+            .unwrap_err();
+        assert!(err.contains("unknown processor"));
     }
 }

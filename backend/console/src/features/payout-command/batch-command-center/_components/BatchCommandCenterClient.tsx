@@ -34,6 +34,7 @@ import {
   buildBulkBatchSummary,
   mockBulkPayoutRows,
   receiverBanksFromIfscs,
+  requestedRailFromKinds,
   type RoutingPhase,
 } from '../../finance-ops/bulkRouteDemo'
 
@@ -208,6 +209,10 @@ export default function BatchCommandCenterClient() {
     const parsed = intentFilePreviewRows
     const mock = mockBulkPayoutRows(Math.max(parsed.length, 8), aiRouteFileName)
     const ifscs = parsed.map((r) => r.ifsc)
+    const kinds = parsed.map((r) => r.instrumentKind)
+    const maxRowMinor = parsed.length
+      ? parsed.reduce((m, row) => Math.max(m, Math.round((Number(row.amount) || 0) * 100)), 0)
+      : 0
     const base = buildBulkBatchSummary({
       fileName: aiRouteFileName,
       rows: mock,
@@ -218,6 +223,8 @@ export default function BatchCommandCenterClient() {
         minute: '2-digit',
       }),
       ifscs,
+      kinds,
+      routeAmountMinor: maxRowMinor || undefined,
     })
     const amountMinor = parsed.length
       ? parsed.reduce((sum, row) => sum + Math.round((Number(row.amount) || 0) * 100), 0)
@@ -232,6 +239,8 @@ export default function BatchCommandCenterClient() {
         : base.uniqueBeneficiaries,
       receiverBanks: receiverBanksFromIfscs(ifscs),
       receiverIfscCount: ifscs.filter(Boolean).length,
+      requestedRail: requestedRailFromKinds(kinds),
+      routeAmountMinor: maxRowMinor || base.routeAmountMinor,
       requestedBy: 'finance.ops@merchant.in',
     }
   }, [aiRouteFileName, activeBatchId, intentFilePreviewRows])

@@ -92,3 +92,27 @@ fn stable_hash(seed: &str) -> u64 {
     seed.hash(&mut h);
     h.finish()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::catalog::processors;
+
+    #[test]
+    fn ml_weight_is_zero_so_score_does_not_move() {
+        let rzp = processors().into_iter().find(|p| p.id == Psp::Razorpay).unwrap();
+        let without = score(&rzp, None, None);
+        let with = score(&rzp, None, Some(1.0));
+        assert_eq!(W_ML, 0.0);
+        assert_eq!(without.final_score, with.final_score);
+        assert_eq!(with.ml_score, Some(1.0));
+    }
+
+    #[test]
+    fn prefer_bump_is_small_and_deterministic() {
+        let rzp = processors().into_iter().find(|p| p.id == Psp::Razorpay).unwrap();
+        let plain = score(&rzp, None, None).final_score;
+        let preferred = score(&rzp, Some(Psp::Razorpay), None).final_score;
+        assert!((preferred - plain - 0.04).abs() < 1e-9);
+    }
+}

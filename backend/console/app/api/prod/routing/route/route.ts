@@ -4,13 +4,10 @@ import {
   applyRefreshedSessionCookies,
   requireSessionTenantForProdProxy,
 } from '@/services/auth/resolvePayoutTenant.server'
+import { routerUrl } from '../_shared'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
-
-function routerBase() {
-  return (process.env.ZORD_ROUTER_URL?.trim() || 'http://localhost:8091').replace(/\/$/, '')
-}
 
 export async function POST(request: NextRequest) {
   const gate = await requireSessionTenantForProdProxy(request)
@@ -28,7 +25,7 @@ export async function POST(request: NextRequest) {
   if (!body.direction) body.direction = 'OUTBOUND'
   if (!body.currency) body.currency = 'INR'
 
-  const url = `${routerBase()}/v1/routing/route`
+  const url = routerUrl('ROUTE')
   try {
     const upstream = await fetch(url, {
       method: 'POST',

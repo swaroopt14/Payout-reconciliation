@@ -229,6 +229,28 @@ export async function runLiveApiChecks(options: RunLiveApiChecksOptions = {}): P
       }),
     },
     {
+      id: 'router-health',
+      label: 'Router · health',
+      url: '/api/prod/routing/health',
+      summarize: (d) => {
+        const body = d as { status?: string; service?: string } | null
+        if (!body) return { status: 'error', detail: 'No response' }
+        if (body.status === 'ok') return { status: 'ok', detail: body.service || 'zord-router' }
+        return { status: 'empty', detail: 'router reachable but not ok' }
+      },
+    },
+    {
+      id: 'router-processors',
+      label: 'Router · processors',
+      url: '/api/prod/routing/processors',
+      summarize: (d) => {
+        const body = d as { processors?: unknown[] } | null
+        if (!body) return { status: 'error', detail: 'No response' }
+        const n = body.processors?.length ?? 0
+        return { status: n > 0 ? 'ok' : 'empty', detail: n > 0 ? `${n} processor(s)` : 'no processors' }
+      },
+    },
+    {
       id: 'zord-overview',
       label: 'Zord metrics · overview',
       url: '/api/prod/zord/metrics/overview?time_range=24h',

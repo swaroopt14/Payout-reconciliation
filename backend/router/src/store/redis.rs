@@ -130,6 +130,7 @@ pub fn apply_local_outcome(
     infra_failure: bool,
     latency_ms: Option<f64>,
     policy: &CircuitPolicy,
+    merchant_action: bool,
 ) -> CircuitState {
     let metrics = snapshot
         .metrics
@@ -141,7 +142,11 @@ pub fn apply_local_outcome(
             error_rate: 0.0,
             samples: 0,
         });
-    metrics.apply_outcome(success, infra_failure, latency_ms);
+    if merchant_action && !success {
+        metrics.samples = metrics.samples.saturating_add(1);
+    } else {
+        metrics.apply_outcome(success, infra_failure, latency_ms);
+    }
     let current = snapshot
         .circuits
         .get(&psp)

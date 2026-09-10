@@ -8,7 +8,7 @@ import { WorkspaceAdminPage } from '@/features/payout-command/workspace-admin/Wo
 
 /**
  * Spec 7.18 - Team, Access, Audit, and Support (`/admin`).
- * Platform admin tenants stay at `/admin/tenants`; credentials live in `/developer`.
+ * API credentials live in `/developer`.
  */
 function AdminBootstrap({ children }: { children: ReactNode }) {
   const params = useSearchParams()

@@ -125,4 +125,38 @@ mod tests {
         assert!(!t.counts_toward_circuit);
         assert!(t.use_fallback);
     }
+
+    #[test]
+    fn success_is_quiet() {
+        let t = triage(true, Some("TIMEOUT"));
+        assert_eq!(t.failure_class, FailureClass::Success);
+        assert!(!t.counts_toward_circuit);
+        assert!(!t.use_fallback);
+    }
+
+    #[test]
+    fn network_and_rail_down_trip_circuit() {
+        for class in ["NETWORK", "NETWORK_DROP", "RAIL_DOWN", "PROCESSOR_DOWN", "RATE_LIMITED", "429"] {
+            let t = triage(false, Some(class));
+            assert!(t.counts_toward_circuit, "{class}");
+            assert!(t.use_fallback, "{class}");
+        }
+    }
+
+    #[test]
+    fn auth_failed_is_hard_decline_family() {
+        let t = triage(false, Some("AUTHORIZATION_FAILED"));
+        assert_eq!(t.failure_class, FailureClass::AuthFailed);
+        assert!(!t.counts_toward_circuit);
+        assert!(t.use_fallback);
+        assert!(!t.merchant_action);
+    }
+
+    #[test]
+    fn unknown_failure_is_treated_as_infra() {
+        let t = triage(false, Some("wat"));
+        assert_eq!(t.failure_class, FailureClass::Unknown);
+        assert!(t.counts_toward_circuit);
+        assert!(t.use_fallback);
+    }
 }

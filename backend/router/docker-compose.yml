@@ -67,5 +67,4 @@ volumes:
 
 networks:
   zord-network:
-    external: true
     name: zord-shared-network

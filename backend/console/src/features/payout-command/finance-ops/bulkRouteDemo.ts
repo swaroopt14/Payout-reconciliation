@@ -206,6 +206,19 @@ export type BulkBatchSummary = {
   requestedBy: string
   receiverBanks: ReceiverBankSlice[]
   receiverIfscCount: number
+  /** Largest row amount — used for IMPS/NEFT/RTGS rewrite, not the batch total. */
+  routeAmountMinor: number
+  requestedRail: 'IMPS' | 'UPI' | 'NEFT' | 'RTGS'
+}
+
+export function requestedRailFromKinds(kinds: Array<string | undefined | null>): 'IMPS' | 'UPI' | 'NEFT' | 'RTGS' {
+  const normalized = kinds.map((k) => (k || '').trim().toUpperCase()).filter(Boolean)
+  if (!normalized.length) return 'IMPS'
+  const upi = normalized.filter((k) => k === 'UPI' || k.includes('UPI')).length
+  if (upi * 2 >= normalized.length) return 'UPI'
+  if (normalized.some((k) => k === 'RTGS')) return 'RTGS'
+  if (normalized.some((k) => k === 'NEFT')) return 'NEFT'
+  return 'IMPS'
 }
 
 export function buildBulkBatchSummary(opts: {
@@ -213,10 +226,13 @@ export function buildBulkBatchSummary(opts: {
   rows: FinanceReconRow[]
   uploadedAt: string
   ifscs?: Array<string | undefined | null>
+  kinds?: Array<string | undefined | null>
+  routeAmountMinor?: number
 }): BulkBatchSummary {
   const totalAmountMinor = opts.rows.reduce((s, r) => s + (Number(r.amount_minor) || 0), 0)
   const beneficiaries = new Set(opts.rows.map((r) => r.fund_account_id || r.payment_id)).size
   const ifscs = opts.ifscs ?? []
+  const maxRow = opts.rows.reduce((m, r) => Math.max(m, Number(r.amount_minor) || 0), 0)
   return {
     batchId: 'batch-001',
     fileName: opts.fileName,
@@ -227,6 +243,8 @@ export function buildBulkBatchSummary(opts: {
     requestedBy: 'finance.ops@merchant.in',
     receiverBanks: receiverBanksFromIfscs(ifscs),
     receiverIfscCount: ifscs.filter((v) => Boolean(v && bankNameFromIfsc(String(v)))).length,
+    routeAmountMinor: opts.routeAmountMinor ?? maxRow ?? totalAmountMinor,
+    requestedRail: requestedRailFromKinds(opts.kinds ?? []),
   }
 }
 

@@ -12,15 +12,10 @@ const appDir = path.join(root, 'app')
 
 /** grep-like: page path segment → required BFF suffix */
 const PAGE_BFF_EXPECTATIONS = [
-  ['customer/intents/page.tsx', 'intents/route.ts'],
-  ['customer/work-queue/page.tsx', 'intents/route.ts'],
-  ['customer/work-queue/page.tsx', 'dlq/route.ts'],
-  ['customer/exceptions/page.tsx', 'dlq/route.ts'],
-  ['customer/intents/replay/page.tsx', 'intents/route.ts'],
-  ['console/page.tsx', 'overview/route.ts'],
-  ['console/ingestion/page.tsx', 'overview/route.ts'],
-  ['ops/intents/page.tsx', 'intents/route.ts'],
-  ['ops/dlq/page.tsx', 'dlq/route.ts'],
+  ['overview/page.tsx', 'overview/route.ts'],
+  ['transactions/page.tsx', 'intents/route.ts'],
+  ['exceptions/page.tsx', 'exceptions/summary/route.ts'],
+  ['payouts/page.tsx', 'intents/route.ts'],
 ]
 
 function walk(dir, acc = []) {
@@ -40,7 +35,12 @@ const prodCallers = pages.filter((p) => {
 
 let missing = 0
 for (const [pageSuffix, routeSuffix] of PAGE_BFF_EXPECTATIONS) {
+  const pagePath = path.join(appDir, pageSuffix)
   const routePath = path.join(root, 'app/api/prod', routeSuffix)
+  if (!fs.existsSync(pagePath)) {
+    console.error(`MISSING PAGE: app/${pageSuffix}`)
+    missing += 1
+  }
   if (!fs.existsSync(routePath)) {
     console.error(`MISSING BFF for ${pageSuffix}: app/api/prod/${routeSuffix}`)
     missing += 1

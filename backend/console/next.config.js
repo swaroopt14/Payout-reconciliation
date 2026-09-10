@@ -20,11 +20,7 @@ const nextConfig = {
       '/sandbox/:path*',
       '/payout-command-view',
       '/payout-command-view/:path*',
-      '/console/:path*',
-      '/customer/:path*',
-      '/ops/:path*',
       '/admin/:path*',
-      '/app-final/:path*',
     ]
     const cacheHeaders = [
       { key: 'Cache-Control', value: 'private, no-cache, no-store, max-age=0, must-revalidate' },

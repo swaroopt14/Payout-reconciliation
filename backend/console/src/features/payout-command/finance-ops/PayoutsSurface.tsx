@@ -36,7 +36,6 @@ import { parseUploadedSheet } from '@/services/payout-command/batch-model'
 import {
   buildBulkBatchSummary,
   countPayoutRowsFromFile,
-  HDFC_NEFT_RECOMMENDATION,
   mockBulkPayoutRows,
   type RoutingPhase,
 } from './bulkRouteDemo'
@@ -85,6 +84,14 @@ export function PayoutsSurface() {
   const [phase, setPhase] = useState<RoutingPhase>('idle')
   const [modalOpen, setModalOpen] = useState(false)
   const [fileIfscs, setFileIfscs] = useState<string[]>([])
+  const [fileKinds, setFileKinds] = useState<string[]>([])
+  const [liveRoute, setLiveRoute] = useState<{ bank: string; rail: string } | null>(null)
+  const [fileStats, setFileStats] = useState<{
+    records: number
+    totalAmountMinor: number
+    routeAmountMinor: number
+    beneficiaries: number
+  } | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -115,6 +122,9 @@ export function PayoutsSurface() {
     const mock = mockBulkPayoutRows(24, name)
     setBulkRows(mock)
     setFileIfscs([])
+    setFileKinds([])
+    setFileStats(null)
+    setLiveRoute(null)
     setBatchMeta({
       name,
       uploadedAt: new Date().toLocaleString('en-IN', {
@@ -144,6 +154,26 @@ export function PayoutsSurface() {
     const mock = mockBulkPayoutRows(count, file.name)
     setBulkRows(mock)
     setFileIfscs(parsed.map((row) => row.ifsc).filter((value): value is string => Boolean(value)))
+    setFileKinds(
+      parsed.map((row) => row.instrumentKind).filter((value): value is string => Boolean(value)),
+    )
+    setLiveRoute(null)
+    setFileStats(
+      parsed.length
+        ? {
+            records: parsed.length,
+            totalAmountMinor: parsed.reduce(
+              (sum, row) => sum + Math.round((Number(row.amount) || 0) * 100),
+              0,
+            ),
+            routeAmountMinor: parsed.reduce(
+              (max, row) => Math.max(max, Math.round((Number(row.amount) || 0) * 100)),
+              0,
+            ),
+            beneficiaries: new Set(parsed.map((row) => row.beneficiary || row.refId)).size,
+          }
+        : null,
+    )
     setBatchMeta({
       name: file.name,
       uploadedAt: new Date().toLocaleString('en-IN', {
@@ -186,6 +216,9 @@ export function PayoutsSurface() {
     setBulkRows([])
     setBatchMeta(null)
     setFileIfscs([])
+    setFileKinds([])
+    setFileStats(null)
+    setLiveRoute(null)
     setPhase('idle')
   }, [phase])
 
@@ -195,13 +228,22 @@ export function PayoutsSurface() {
       rows: bulkRows,
       uploadedAt: batchMeta?.uploadedAt || '—',
       ifscs: fileIfscs,
+      kinds: fileKinds,
     })
     return {
       ...base,
       batchId: 'batch-001',
       requestedBy: 'finance.ops@merchant.in',
+      ...(fileStats
+        ? {
+            totalRecords: fileStats.records,
+            totalAmountMinor: fileStats.totalAmountMinor,
+            uniqueBeneficiaries: fileStats.beneficiaries,
+            routeAmountMinor: fileStats.routeAmountMinor,
+          }
+        : {}),
     }
-  }, [batchMeta, bulkRows, fileIfscs])
+  }, [batchMeta, bulkRows, fileIfscs, fileKinds, fileStats])
 
   const mapped = useMemo(() => rows.map(mapFinanceRowToPayoutRecon), [rows])
   const kpis = useMemo(() => sumPayoutKpis(mapped), [mapped])
@@ -326,7 +368,7 @@ export function PayoutsSurface() {
                 <span className="rounded-full bg-[#EEF4FF] px-2.5 py-1 text-[12px] font-semibold text-[#2B6CB0]">
                   {phase === 'analyzing'
                     ? 'AI analyzing route…'
-                    : `Recommendation: ${HDFC_NEFT_RECOMMENDATION.bank} · ${HDFC_NEFT_RECOMMENDATION.rail}`}
+                    : `Recommendation: ${liveRoute?.bank || 'Router'} · ${liveRoute?.rail || routeSummary.requestedRail}`}
                 </span>
                 <span className="rounded-full bg-[#FFF6E5] px-2.5 py-1 text-[12px] font-semibold text-[#B36B00]">
                   Provider: {phase === 'approved' ? 'processing' : 'pending'}
@@ -344,7 +386,9 @@ export function PayoutsSurface() {
             </div>
             {phase === 'approved' ? (
               <p className="mt-3 text-[13px] text-[#147A3F]">
-                Dispatch started on HDFC · NEFT. Provider status is now processing — not a reconciliation result.
+                Dispatch started on {liveRoute?.bank || 'the selected PSP'} ·{' '}
+                {liveRoute?.rail || routeSummary.requestedRail}. Provider status is now processing — not a
+                reconciliation result.
               </p>
             ) : null}
           </section>
@@ -390,9 +434,11 @@ export function PayoutsSurface() {
                       const bankLabel =
                         row.bank === true ? 'Credited' : row.bank === false ? 'No movement' : 'Pending'
                       const rail = isBulk
-                        ? HDFC_NEFT_RECOMMENDATION.rail
+                        ? liveRoute?.rail || routeSummary.requestedRail
                         : row.mode || 'NEFT'
-                      const providerBank = isBulk ? HDFC_NEFT_RECOMMENDATION.bank : row.paymentProvider || 'razorpay'
+                      const providerBank = isBulk
+                        ? liveRoute?.bank || row.paymentProvider || 'razorpay'
+                        : row.paymentProvider || 'razorpay'
                       return (
                         <tr
                           key={row.payoutId}
@@ -479,6 +525,7 @@ export function PayoutsSurface() {
         onApprove={onApproveRoute}
         onCancel={onCancelRoute}
         onAskZord={() => router.push('/ask?demo=sandbox')}
+        onLiveDecision={setLiveRoute}
       />
     </div>
   )

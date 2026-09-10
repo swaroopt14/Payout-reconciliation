@@ -147,6 +147,7 @@ export function AiRouteRecommendationModal({
   onApprove,
   onCancel,
   onAskZord,
+  onLiveDecision,
 }: {
   open: boolean
   phase: RoutingPhase
@@ -155,6 +156,7 @@ export function AiRouteRecommendationModal({
   onApprove: () => void
   onCancel: () => void
   onAskZord?: () => void
+  onLiveDecision?: (decision: { bank: string; rail: string } | null) => void
 }) {
   const [elapsedMs, setElapsedMs] = useState(0)
   const [reveal, setReveal] = useState(false)
@@ -172,51 +174,66 @@ export function AiRouteRecommendationModal({
     setProcessors([])
     setRouteError(null)
     const started = performance.now()
-    let raf = 0
     let finished = false
     let liveDone = false
+    let cancelled = false
+    let minElapsed = false
 
     const finish = () => {
-      if (finished) return
+      if (finished || cancelled) return
       finished = true
+      setElapsedMs(ROUTING_TOTAL_MS)
       onAnalyzeComplete()
+    }
+
+    const maybeFinish = () => {
+      if (liveDone && minElapsed) finish()
     }
 
     void Promise.all([
       postRouteDecision({
         payment_id: summary.batchId || summary.fileName,
-        amount_minor: summary.totalAmountMinor,
+        amount_minor: summary.routeAmountMinor || summary.totalAmountMinor,
         currency: 'INR',
-        payment_method: 'IMPS',
+        payment_method: summary.requestedRail || 'IMPS',
         direction: 'OUTBOUND',
         country: 'IN',
       }),
       getProcessors(),
     ]).then(([routeRes, processorRes]) => {
+      if (cancelled) return
       liveDone = true
-      if (routeRes.ok && routeRes.data) setDecision(routeRes.data)
-      else setRouteError(routeRes.errorText || `router HTTP ${routeRes.status}`)
+      if (routeRes.ok && routeRes.data) {
+        setDecision(routeRes.data)
+        onLiveDecision?.({
+          bank: processorLabel(routeRes.data.selected_processor || routeRes.data.psp),
+          rail: routeRes.data.rail,
+        })
+      } else {
+        setRouteError(routeRes.errorText || `router HTTP ${routeRes.status}`)
+        onLiveDecision?.(null)
+      }
       if (processorRes.ok) setProcessors(processorRes.processors)
+      maybeFinish()
     })
 
-    const tick = () => {
-      const next = Math.min(ROUTING_TOTAL_MS, performance.now() - started)
-      setElapsedMs(next)
-      const waited = performance.now() - started
-      if (liveDone && waited >= 1200) {
-        setElapsedMs(ROUTING_TOTAL_MS)
-        finish()
-        return
-      }
-      if (next >= ROUTING_TOTAL_MS) {
-        finish()
-        return
-      }
-      raf = window.requestAnimationFrame(tick)
+    const progress = window.setInterval(() => {
+      if (cancelled || finished) return
+      setElapsedMs(Math.min(ROUTING_TOTAL_MS, performance.now() - started))
+    }, 100)
+    const minWait = window.setTimeout(() => {
+      minElapsed = true
+      maybeFinish()
+    }, 1200)
+    const maxWait = window.setTimeout(finish, ROUTING_TOTAL_MS)
+
+    return () => {
+      cancelled = true
+      window.clearInterval(progress)
+      window.clearTimeout(minWait)
+      window.clearTimeout(maxWait)
     }
-    raf = window.requestAnimationFrame(tick)
-    return () => window.cancelAnimationFrame(raf)
-  }, [open, thinking, onAnalyzeComplete, summary.batchId, summary.fileName, summary.totalAmountMinor])
+  }, [open, thinking, onAnalyzeComplete, onLiveDecision, summary.batchId, summary.fileName, summary.totalAmountMinor, summary.routeAmountMinor, summary.requestedRail])
 
   useEffect(() => {
     if (!ready) {
@@ -239,12 +256,17 @@ export function AiRouteRecommendationModal({
       ...HDFC_NEFT_RECOMMENDATION,
       bank,
       rail,
+      eta: rail === 'IMPS' || rail === 'UPI' ? 'T+0' : 'T+1',
+      etaNote: rail === 'IMPS' || rail === 'UPI' ? 'Near real-time' : 'Banking hours',
       confidence: pct(decision.score),
       successProbability: pct(decision.reason?.authorization_rate ?? decision.score),
       why: [
         `Selected by ${decision.routing_strategy} scoring (auth × 0.45 + health × 0.25 + cost × 0.15 + latency × 0.10 + priority × 0.05)`,
         `Authorization rate ${pct(decision.reason.authorization_rate)}% · health ${pct(decision.reason.health_score)}%`,
         `Connector ${decision.connector_id}`,
+        decision.rail_rewritten_from
+          ? `Rail rewritten ${decision.rail_rewritten_from} → ${rail} from file amount`
+          : `Requested rail from file: ${summary.requestedRail || 'IMPS'}`,
         decision.rules_applied?.length
           ? `Rules applied: ${decision.rules_applied.join(', ')}`
           : 'No merchant override rules matched',
@@ -254,7 +276,7 @@ export function AiRouteRecommendationModal({
       fallback,
       confidenceLabel: decision.metrics_source === 'static_config' ? 'Config-scored' : 'Live-scored',
     }
-  }, [decision])
+  }, [decision, summary.requestedRail])
 
   const connectedBanks = useMemo(() => {
     if (!processors.length) return CONNECTED_BANKS

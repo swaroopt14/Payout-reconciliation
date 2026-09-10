@@ -18,6 +18,7 @@ export type BatchRow = {
   amount: number
   beneficiary: string
   ifsc?: string
+  instrumentKind?: string
   status: BatchRowStatus
   stage: string
   reason: string
@@ -538,6 +539,13 @@ function parseMatrixToBatchRows(matrix: string[][]): BatchRow[] {
     'bank_ifsc',
     'beneficiary_ifsc',
   )
+  const kindIdx = pickHeader(
+    'beneficiary.instrument.kind',
+    'instrument_kind',
+    'payment_method',
+    'mode',
+    'rail',
+  )
   const statusIdx = pickHeader('status')
   const reasonIdx = pickHeader('reason', 'error', 'error_detail')
 
@@ -566,6 +574,8 @@ function parseMatrixToBatchRows(matrix: string[][]): BatchRow[] {
       amount: Number.isFinite(amountValue) && amountValue > 0 ? amountValue : base.amount,
       beneficiary: beneficiaryIdx >= 0 && cells[beneficiaryIdx] ? cells[beneficiaryIdx] : base.beneficiary,
       ifsc: ifscIdx >= 0 && cells[ifscIdx] ? cells[ifscIdx].replace(/\s+/g, '').toUpperCase() : undefined,
+      instrumentKind:
+        kindIdx >= 0 && cells[kindIdx] ? cells[kindIdx].replace(/\s+/g, '').toUpperCase() : undefined,
       status,
       stage: STAGES_BY_STATUS[status],
       reason: status === 'Failed' ? (reasonIdx >= 0 && cells[reasonIdx] ? cells[reasonIdx] : base.reason) : '-',

@@ -44,7 +44,7 @@ export function useAuth() {
 
   const checkAuth = () => {
     if (!isAuthenticated()) {
-      router.push('/console/login')
+      router.push('/signin')
       return false
     }
     return true

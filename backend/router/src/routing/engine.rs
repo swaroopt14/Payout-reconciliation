@@ -274,4 +274,152 @@ mod tests {
         assert!(d.eliminated.iter().any(|e| e.psp == Psp::Razorpay && e.reason == "circuit_open"));
         assert_eq!(d.metrics_source, "redis");
     }
+
+    #[test]
+    fn imps_just_under_two_lakh_stays_imps() {
+        let d = route(req(Direction::Outbound, Rail::Imps, 19_999_999, "INR", "pout_under")).unwrap();
+        assert_eq!(d.rail, Rail::Imps);
+        assert_eq!(d.rail_rewritten_from, None);
+        assert_eq!(d.psp, Psp::Razorpay);
+    }
+
+    #[test]
+    fn two_lakh_exact_rewrites_to_neft() {
+        let d = route(req(Direction::Outbound, Rail::Imps, 20_000_000, "INR", "pout_2l")).unwrap();
+        assert_eq!(d.rail, Rail::Neft);
+        assert_eq!(d.rail_rewritten_from, Some(Rail::Imps));
+    }
+
+    #[test]
+    fn requested_neft_is_not_rewritten_to_rtgs() {
+        let d = route(req(Direction::Outbound, Rail::Neft, 80_000_000, "INR", "pout_neft")).unwrap();
+        assert_eq!(d.rail, Rail::Neft);
+        assert_eq!(d.rail_rewritten_from, None);
+    }
+
+    #[test]
+    fn outbound_upi_payout_uses_razorpayx() {
+        let d = route(req(Direction::Outbound, Rail::Upi, 7_500, "INR", "pout_upi")).unwrap();
+        assert_eq!(d.psp, Psp::Razorpay);
+        assert_eq!(d.connector_id, "razorpayx-v1");
+        assert_eq!(d.rail, Rail::Upi);
+        assert!(d.eliminated.iter().any(|e| e.psp == Psp::Payu && e.reason == "direction_not_supported"));
+        assert!(d.eliminated.iter().any(|e| e.psp == Psp::Stripe && e.reason == "currency_not_supported"));
+    }
+
+    #[test]
+    fn inr_inbound_card_stays_on_india_psps_not_stripe() {
+        let d = route(req(Direction::Inbound, Rail::Card, 2500, "INR", "pay_inr_card")).unwrap();
+        assert_ne!(d.psp, Psp::Stripe);
+        assert!(d.psp == Psp::Razorpay || d.psp == Psp::Cashfree || d.psp == Psp::Payu);
+        assert!(!d.rules_applied.iter().any(|id| id.contains("stripe")));
+    }
+
+    #[test]
+    fn eur_card_prefers_stripe() {
+        let d = route(req(Direction::Inbound, Rail::Card, 1200, "EUR", "pay_eur")).unwrap();
+        assert_eq!(d.psp, Psp::Stripe);
+        assert!(d.eliminated.iter().any(|e| e.psp == Psp::Razorpay && e.reason == "currency_not_supported"));
+    }
+
+    #[test]
+    fn ml_score_does_not_change_inr_payout_winner() {
+        let mut plain = req(Direction::Outbound, Rail::Imps, 12_000, "INR", "pout_ml");
+        let a = route(plain.clone()).unwrap();
+        plain.ml_score = Some(0.01);
+        let b = route(plain).unwrap();
+        assert_eq!(a.psp, b.psp);
+        assert_eq!(a.psp, Psp::Razorpay);
+        assert_eq!(b.reason.ml_score, Some(0.01));
+        assert_eq!(a.score, b.score);
+    }
+
+    #[test]
+    fn csv_bank_kind_routes_as_imps() {
+        let d = route(RouteRequest {
+            tenant_id: None,
+            merchant_id: None,
+            entity_id: None,
+            payment_id: Some("PAY-001".into()),
+            direction: Some(Direction::Outbound),
+            rail: None,
+            payment_method: Some("BANK".into()),
+            card_network: None,
+            amount_minor: Some(560_000),
+            amount: None,
+            currency: "INR".into(),
+            country: Some("IN".into()),
+            ml_score: None,
+        })
+        .unwrap();
+        assert_eq!(d.rail, Rail::Imps);
+        assert_eq!(d.psp, Psp::Razorpay);
+    }
+
+    #[test]
+    fn exclude_rule_fails_over_to_cashfree() {
+        let mut inputs = RouteInputs::static_seed();
+        inputs.rules.insert(
+            0,
+            RoutingRule {
+                id: "rule_exclude_rzp".into(),
+                merchant_id: None,
+                name: "Exclude Razorpay".into(),
+                priority: 1,
+                enabled: true,
+                condition: serde_json::json!({
+                    "field": "currency",
+                    "operator": "equals",
+                    "value": "INR"
+                }),
+                action: serde_json::json!({ "type": "exclude", "processor": "razorpay" }),
+            },
+        );
+        let d = route_with(req(Direction::Outbound, Rail::Imps, 10_000, "INR", "pout_ex"), inputs).unwrap();
+        assert_eq!(d.psp, Psp::Cashfree);
+        assert!(d.rules_applied.iter().any(|id| id == "rule_exclude_rzp"));
+        assert!(d.eliminated.iter().any(|e| e.psp == Psp::Razorpay && e.reason == "rule_excluded"));
+    }
+
+    #[test]
+    fn both_india_payout_circuits_open_has_no_eligible_psp() {
+        let mut inputs = RouteInputs::static_seed();
+        inputs.open_circuits = vec![Psp::Razorpay, Psp::Cashfree];
+        let err = route_with(req(Direction::Outbound, Rail::Imps, 10_000, "INR", "pout_dead"), inputs).unwrap_err();
+        assert!(err.contains("no eligible PSP"), "{err}");
+    }
+
+    #[test]
+    fn disabled_processor_is_eliminated() {
+        let mut inputs = RouteInputs::static_seed();
+        inputs.processors.iter_mut().find(|p| p.id == Psp::Razorpay).unwrap().enabled = false;
+        let d = route_with(req(Direction::Outbound, Rail::Imps, 10_000, "INR", "pout_off"), inputs).unwrap();
+        assert_eq!(d.psp, Psp::Cashfree);
+        assert!(d.eliminated.iter().any(|e| e.psp == Psp::Razorpay && e.reason == "processor_disabled"));
+    }
+
+    #[test]
+    fn upi_collect_volume_split_hits_both_psps() {
+        let mut razorpay = 0;
+        let mut cashfree = 0;
+        for i in 0..80 {
+            let d = route(req(Direction::Inbound, Rail::Upi, 5000, "INR", &format!("pay_vol_{i}"))).unwrap();
+            assert_eq!(d.routing_strategy, "volume_split");
+            match d.psp {
+                Psp::Razorpay => razorpay += 1,
+                Psp::Cashfree => cashfree += 1,
+                other => panic!("unexpected volume-split PSP {other:?}"),
+            }
+        }
+        assert!(razorpay > 0, "razorpay split empty");
+        assert!(cashfree > 0, "cashfree split empty");
+        assert!(razorpay > cashfree, "70/30 should lean Razorpay: rzp={razorpay} cf={cashfree}");
+    }
+
+    #[test]
+    fn wallet_collect_does_not_use_stripe() {
+        let d = route(req(Direction::Inbound, Rail::Wallet, 900, "INR", "pay_wallet")).unwrap();
+        assert_ne!(d.psp, Psp::Stripe);
+        assert_eq!(d.rail, Rail::Wallet);
+    }
 }
