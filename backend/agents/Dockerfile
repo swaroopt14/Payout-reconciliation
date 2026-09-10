@@ -1,26 +1,28 @@
-FROM golang:1.25-bookworm AS builder
+# syntax=docker/dockerfile:1.7
+# Sarama is pure Go — no CGO.
+FROM golang:1.25.7-alpine AS builder
 
-WORKDIR /app
+RUN apk add --no-cache ca-certificates git
+
+WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
-
 COPY . .
-ENV CGO_ENABLED=1 GOOS=linux
-RUN go mod tidy
-RUN go build -trimpath -ldflags "-s -w" -o /out/zord-prompt-layer ./cmd/main.go
 
-FROM debian:bookworm-slim
+RUN CGO_ENABLED=0 GOOS=linux \
+    go build -trimpath -ldflags "-s -w" -o /out/zord-prompt-layer ./cmd/main.go
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+FROM alpine:3.19
 
-RUN useradd -r -u 10001 app
+RUN apk add --no-cache ca-certificates wget \
+    && adduser -D -u 65532 nonroot
 
 WORKDIR /app
 COPY --from=builder /out/zord-prompt-layer /app/zord-prompt-layer
 
-USER 10001
-
+ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+USER 65532:65532
 EXPOSE 8086
-CMD ["/app/zord-prompt-layer"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD wget -qO- http://127.0.0.1:8086/health || exit 1
+ENTRYPOINT ["/app/zord-prompt-layer"]

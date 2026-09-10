@@ -24,9 +24,9 @@ type ReconciliationException struct {
 }
 
 type ReasonExposure struct {
-	Reason         string `json:"reason"`
-	Count          int    `json:"count"`
-	ExposureMinor  int64  `json:"exposure_minor"`
+	Reason        string `json:"reason"`
+	Count         int    `json:"count"`
+	ExposureMinor int64  `json:"exposure_minor"`
 }
 
 type FinanceSummary struct {
@@ -44,6 +44,8 @@ type ReconciliationRun struct {
 	TenantID       string
 	ConnectorID    string
 	AccountID      string
+	BatchID        string
+	EntityIDs      []string
 	Status         string
 	PaymentCount   int
 	MatchedCount   int

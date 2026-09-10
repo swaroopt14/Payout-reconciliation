@@ -63,21 +63,72 @@ func (h *FinancialHandler) run(c *gin.Context, body reconRunBody, _ bool) {
 	}
 	run, results, err := h.Service.Run(c.Request.Context(), recon.FinancialRunRequest{
 		TenantID: body.TenantID, ConnectorID: body.ConnectorID, AccountID: body.AccountID,
+		BatchID: body.BatchID, PayoutIDs: body.PayoutIDs,
 	})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{
-		"run_id":           run.ID,
-		"status":           run.Status,
-		"payment_count":    run.PaymentCount,
-		"matched_count":    run.MatchedCount,
-		"exception_count":  run.ExceptionCount,
-		"counts":           run.Counts,
-		"result_count":     len(results),
-		"rule_version":     recon.FinancialRuleVersion,
-	})
+	out := gin.H{
+		"run_id":          run.ID,
+		"status":          run.Status,
+		"payment_count":   run.PaymentCount,
+		"matched_count":   run.MatchedCount,
+		"exception_count": run.ExceptionCount,
+		"counts":          run.Counts,
+		"result_count":    len(results),
+		"rule_version":    recon.FinancialRuleVersion,
+	}
+	if strings.TrimSpace(body.BatchID) != "" {
+		out["batch_id"] = strings.TrimSpace(body.BatchID)
+		out["batch"] = recon.BatchCloseFromResults(strings.TrimSpace(body.BatchID), run.ID, results, len(body.PayoutIDs))
+	}
+	c.JSON(http.StatusOK, out)
+}
+
+func (h *FinancialHandler) ReconcileBatch(c *gin.Context) {
+	var body reconRunBody
+	_ = c.ShouldBindJSON(&body)
+	body.BatchID = strings.TrimSpace(c.Param("batch_id"))
+	if body.TenantID == "" {
+		body.TenantID = strings.TrimSpace(c.Query("tenant_id"))
+	}
+	if body.ConnectorID == "" {
+		body.ConnectorID = strings.TrimSpace(c.Query("connector_id"))
+	}
+	if body.AccountID == "" {
+		body.AccountID = strings.TrimSpace(c.Query("account_id"))
+	}
+	if body.TenantID == "" || body.ConnectorID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "tenant_id and connector_id are required"})
+		return
+	}
+	if body.BatchID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "batch_id is required"})
+		return
+	}
+	if !auth.EnsureBodyTenant(c, body.TenantID) {
+		return
+	}
+	h.run(c, body, false)
+}
+
+func (h *FinancialHandler) GetBatch(c *gin.Context) {
+	tenantID, connectorID, ok := h.scope(c)
+	if !ok {
+		return
+	}
+	batchID := strings.TrimSpace(c.Param("batch_id"))
+	closeDoc, found, err := h.Service.BatchClose(c.Request.Context(), tenantID, connectorID, batchID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "lookup_failed"})
+		return
+	}
+	if !found {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not_found"})
+		return
+	}
+	c.JSON(http.StatusOK, closeDoc)
 }
 
 func (h *FinancialHandler) GetRun(c *gin.Context) {
@@ -113,24 +164,19 @@ func (h *FinancialHandler) GetPayment(c *gin.Context) {
 		events, _ = h.Store.ListObservationEvents(c.Request.Context(), tenantID, connectorID, pay.PaymentID)
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"status":           pay.CanonicalStatus,
-		"provider_status":  pay.ProviderStatus,
-		"payment_id":       pay.PaymentID,
-		"amount_minor":     pay.AmountMinor,
-		"currency":         pay.Currency,
-		"captured":         pay.Captured,
-		"sources":          pay.Sources,
-		"observations":     observationJSON(events),
-		"reconciliation": gin.H{
-			"result":             fr.Result,
-			"reason":             fr.Reason,
-			"expected_amount":    fr.ExpectedAmount,
-			"observed_amount":    fr.ObservedAmount,
-			"variance_amount":    fr.VarianceAmount,
-			"confidence":         fr.Confidence,
-			"bank_credit_proven": fr.BankCreditProven,
-		},
-		"evidence_refs": fr.EvidenceRefs,
+		"status":          pay.CanonicalStatus,
+		"provider_status": pay.ProviderStatus,
+		"payment_id":      pay.PaymentID,
+		"amount_minor":    pay.AmountMinor,
+		"currency":        pay.Currency,
+		"method":          pay.Method,
+		"direction":       recon.DirectionInbound,
+		"rail":            firstRail(fr.Rail, pay.Method),
+		"captured":        pay.Captured,
+		"sources":         pay.Sources,
+		"observations":    observationJSON(events),
+		"reconciliation":  recon.ReconJSON(fr),
+		"evidence_refs":   fr.EvidenceRefs,
 	})
 }
 
@@ -155,30 +201,31 @@ func (h *FinancialHandler) GetPayout(c *gin.Context) {
 	obs := make([]gin.H, 0, len(events))
 	for _, ev := range events {
 		obs = append(obs, gin.H{
-			"source_event_id": ev.SourceEventID,
-			"source_hash":     ev.SourceHash,
-			"utr":             ev.RawReference,
+			"source":           ev.Source,
+			"provider_status":  ev.ProviderStatus,
+			"canonical_status": ev.CanonicalStatus,
+			"source_event_id":  ev.SourceEventID,
+			"source_hash":      ev.SourceHash,
+			"utr":              ev.RawReference,
+			"observed_at":      ev.ObservedAt,
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"status":          po.ProviderStatus,
-		"provider_status": po.ProviderStatus,
-		"payout_id":       po.PayoutID,
-		"amount_minor":    po.AmountMinor,
-		"currency":        po.Currency,
-		"utr":             po.UTR,
-		"mode":            po.Mode,
-		"status_reason":   po.StatusReason,
-		"observations":    obs,
-		"reconciliation": gin.H{
-			"result":          fr.Result,
-			"reason":          fr.Reason,
-			"expected_amount": fr.ExpectedAmount,
-			"observed_amount": fr.ObservedAmount,
-			"variance_amount": fr.VarianceAmount,
-			"confidence":      fr.Confidence,
-		},
-		"evidence_refs": fr.EvidenceRefs,
+		"status":              po.ProviderStatus,
+		"provider_status":     po.ProviderStatus,
+		"payout_id":           po.PayoutID,
+		"amount_minor":        po.AmountMinor,
+		"currency":            po.Currency,
+		"utr":                 po.UTR,
+		"mode":                po.Mode,
+		"purpose":             po.Purpose,
+		"direction":           recon.DirectionOutbound,
+		"rail":                firstRail(fr.Rail, po.Mode),
+		"status_reason":       po.StatusReason,
+		"provider_created_at": po.ProviderCreatedAt,
+		"observations":        obs,
+		"reconciliation":      recon.ReconJSON(fr),
+		"evidence_refs":       fr.EvidenceRefs,
 	})
 }
 
@@ -201,6 +248,44 @@ func (h *FinancialHandler) GetPayoutEvidence(c *gin.Context) {
 		"evidence_refs": fr.EvidenceRefs,
 		"evidence_ids":  recon.EvidenceIDList(fr.EvidenceRefs),
 	})
+}
+
+func (h *FinancialHandler) GetPayoutTimeline(c *gin.Context) {
+	h.writeTimeline(c, "payout", c.Param("payout_id"))
+}
+
+func (h *FinancialHandler) GetPaymentTimeline(c *gin.Context) {
+	h.writeTimeline(c, "payment", c.Param("payment_id"))
+}
+
+func (h *FinancialHandler) writeTimeline(c *gin.Context, entityType, entityID string) {
+	tenantID, connectorID, ok := h.scope(c)
+	if !ok {
+		return
+	}
+	if h == nil || h.Service == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "financial recon not configured"})
+		return
+	}
+	var (
+		tl    recon.EntityTimeline
+		found bool
+		err   error
+	)
+	if entityType == "payout" {
+		tl, found, err = h.Service.PayoutTimeline(c.Request.Context(), tenantID, connectorID, entityID)
+	} else {
+		tl, found, err = h.Service.PaymentTimeline(c.Request.Context(), tenantID, connectorID, entityID)
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "lookup_failed"})
+		return
+	}
+	if !found {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not_found"})
+		return
+	}
+	c.JSON(http.StatusOK, tl)
 }
 
 func (h *FinancialHandler) SLAPolicy(c *gin.Context) {
@@ -232,6 +317,56 @@ func (h *FinancialHandler) GetEvidence(c *gin.Context) {
 		"evidence_refs": fr.EvidenceRefs,
 		"evidence_ids":  recon.EvidenceIDList(fr.EvidenceRefs),
 	})
+}
+
+func (h *FinancialHandler) ListResults(c *gin.Context) {
+	tenantID, connectorID, ok := h.scope(c)
+	if !ok {
+		return
+	}
+	if h.Service == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "financial recon not configured"})
+		return
+	}
+	out, err := h.Service.ListFinanceResults(c.Request.Context(), tenantID, connectorID, c.Query("result"))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, out)
+}
+
+func (h *FinancialHandler) GetEvaluation(c *gin.Context) {
+	tenantID, connectorID, ok := h.scope(c)
+	if !ok {
+		return
+	}
+	if h.Service == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "financial recon not configured"})
+		return
+	}
+	out, err := h.Service.Evaluation(c.Request.Context(), tenantID, connectorID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, out)
+}
+
+func (h *FinancialHandler) ListInvestigations(c *gin.Context) {
+	tenantID, connectorID, ok := h.scope(c)
+	if !ok {
+		return
+	}
+	list, err := h.Store.ListInvestigations(c.Request.Context(), tenantID, connectorID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if list == nil {
+		list = []recon.InvestigationRecord{}
+	}
+	c.JSON(http.StatusOK, gin.H{"investigations": list})
 }
 
 func (h *FinancialHandler) GetFinanceSummary(c *gin.Context) {
@@ -413,6 +548,24 @@ func (h *FinancialHandler) GetBank(c *gin.Context) {
 		}
 	}
 	c.JSON(http.StatusNotFound, gin.H{"error": "not_found"})
+}
+
+func (h *FinancialHandler) ListInstruments(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{
+		"instruments": recon.RazorpayInstruments(),
+		"psps":        []string{"razorpay", "cashfree", "payu", "stripe"},
+		"legs": gin.H{
+			"two_way":   "merchant books vs PSP books (captured+settlement, or payout processed)",
+			"three_way": "two_way plus proven bank CREDIT (inbound) or DEBIT (outbound)",
+		},
+	})
+}
+
+func firstRail(fromResult, raw string) string {
+	if strings.TrimSpace(fromResult) != "" {
+		return recon.NormalizeRail(fromResult)
+	}
+	return recon.NormalizeRail(raw)
 }
 
 func (h *FinancialHandler) scope(c *gin.Context) (string, string, bool) {

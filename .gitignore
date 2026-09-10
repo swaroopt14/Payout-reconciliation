@@ -2,6 +2,9 @@
 # Optional (editor)
 frontend/.vscode/
 
+# Nested vendor clones (not part of Zord source)
+backend/hyperswitch/
+
 # --- Backend ---
 backend/bin/
 backend/*.exe

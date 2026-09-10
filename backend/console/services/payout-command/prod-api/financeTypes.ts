@@ -57,6 +57,23 @@ export type FinanceCashPosition = {
   as_of?: string
 }
 
+export type FinanceCashScheduleDay = {
+  date: string
+  expected_credit_minor: number
+  expected_debit_minor: number
+  count: number
+}
+
+export type FinanceCashSchedule = {
+  as_of?: string
+  horizon_days: number
+  kind?: string
+  days: FinanceCashScheduleDay[]
+  unknown_timing_minor: number
+  already_received_minor: number
+  limitations?: string[]
+}
+
 export type FinanceObservation = {
   source: string
   provider_status: string
@@ -88,7 +105,7 @@ export type FinancePayment = {
     variance_amount: number
     confidence: number
     bank_credit_proven?: boolean
-  }
+  } | null
   evidence_refs?: Record<string, unknown>
   financial_movement?: {
     payment: number | null
@@ -96,6 +113,30 @@ export type FinancePayment = {
     bank: number | null
     refund: number | null
   }
+}
+
+export type FinancePayout = {
+  status: string
+  provider_status: string
+  payout_id: string
+  amount_minor: number
+  currency: string
+  utr?: string | null
+  mode?: string
+  purpose?: string
+  status_reason?: string
+  provider_created_at?: string
+  observations?: FinanceObservation[]
+  reconciliation?: {
+    result: FinanceReconResult
+    reason: string
+    expected_amount: number
+    observed_amount: number
+    variance_amount: number
+    confidence: number
+    bank_credit_proven?: boolean
+  } | null
+  evidence_refs?: Record<string, unknown>
 }
 
 export type FinanceRefund = {
@@ -272,4 +313,46 @@ export type FinanceEvaluation = {
   false_resolution_rate: number
   financial_accuracy: number
   evidence_grounding: number
+}
+
+export type FinanceTimelineCapture = {
+  captured_at: string
+  source: string
+  source_event_id?: string
+  source_hash?: string
+  provider_status?: string
+  utr?: string
+}
+
+export type FinanceTimelineStep = {
+  seq: number
+  kind: string
+  label: string
+  captured: boolean
+  captured_at: string | null
+  source?: string
+  source_event_id?: string
+  source_hash?: string
+  provider_status?: string
+  provider_at?: string | null
+  detail?: Record<string, unknown>
+  events?: FinanceTimelineCapture[]
+  note?: string
+}
+
+export type FinanceEntityTimeline = {
+  entity_type: 'payout' | 'payment' | string
+  entity_id: string
+  provider_status: string
+  recon_run: boolean
+  reconciliation: {
+    result: FinanceReconResult
+    reason: string
+    expected_amount: number
+    observed_amount: number
+    variance_amount: number
+    confidence: number
+    bank_credit_proven?: boolean
+  } | null
+  steps: FinanceTimelineStep[]
 }

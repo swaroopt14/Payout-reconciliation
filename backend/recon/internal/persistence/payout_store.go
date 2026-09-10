@@ -170,7 +170,9 @@ func (s *ReconSQLStore) GetCanonicalPayoutFact(ctx context.Context, tenantID, co
 
 func (s *ReconSQLStore) ListPayoutObservationFacts(ctx context.Context, tenantID, connectorID, payoutID string) ([]recon.ObservationFact, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT COALESCE(source_event_id,''), COALESCE(source_hash,''), COALESCE(utr,'')
+		SELECT COALESCE(source,''), COALESCE(provider_status, status, ''), COALESCE(status,''),
+			COALESCE(source_event_id,''), COALESCE(source_hash,''),
+			COALESCE(NULLIF(utr,''), COALESCE(raw_reference,'')), observed_at
 		FROM provider_payout_observation_events
 		WHERE tenant_id=$1 AND connector_id=$2 AND payout_id=$3 ORDER BY observed_at ASC`,
 		tenantID, connectorID, payoutID)
@@ -181,7 +183,7 @@ func (s *ReconSQLStore) ListPayoutObservationFacts(ctx context.Context, tenantID
 	var out []recon.ObservationFact
 	for rows.Next() {
 		var f recon.ObservationFact
-		if err := rows.Scan(&f.SourceEventID, &f.SourceHash, &f.RawReference); err != nil {
+		if err := rows.Scan(&f.Source, &f.ProviderStatus, &f.CanonicalStatus, &f.SourceEventID, &f.SourceHash, &f.RawReference, &f.ObservedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, f)

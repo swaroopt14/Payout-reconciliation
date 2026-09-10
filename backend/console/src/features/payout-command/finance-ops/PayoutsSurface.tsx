@@ -32,6 +32,7 @@ import {
 import { reconToneClass } from './payoutLifecycleModel'
 import { PayoutLifecycleDrawer } from './PayoutLifecycleDrawer'
 import { PaymentProviderBadge } from './PaymentProviderBadge'
+import { parseUploadedSheet } from '@/services/payout-command/batch-model'
 import {
   buildBulkBatchSummary,
   countPayoutRowsFromFile,
@@ -83,6 +84,7 @@ export function PayoutsSurface() {
   const [batchMeta, setBatchMeta] = useState<{ name: string; uploadedAt: string } | null>(null)
   const [phase, setPhase] = useState<RoutingPhase>('idle')
   const [modalOpen, setModalOpen] = useState(false)
+  const [fileIfscs, setFileIfscs] = useState<string[]>([])
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -112,6 +114,7 @@ export function PayoutsSurface() {
     const name = fileParam || 'bulk_payout_batch.csv'
     const mock = mockBulkPayoutRows(24, name)
     setBulkRows(mock)
+    setFileIfscs([])
     setBatchMeta({
       name,
       uploadedAt: new Date().toLocaleString('en-IN', {
@@ -135,10 +138,12 @@ export function PayoutsSurface() {
 
   const onFile = useCallback(async (file: File | undefined) => {
     if (!file) return
-    const text = await file.text().catch(() => '')
-    const count = countPayoutRowsFromFile(text)
+    const parsed = await parseUploadedSheet(file).catch(() => [])
+    const text = parsed.length ? '' : await file.text().catch(() => '')
+    const count = parsed.length || countPayoutRowsFromFile(text)
     const mock = mockBulkPayoutRows(count, file.name)
     setBulkRows(mock)
+    setFileIfscs(parsed.map((row) => row.ifsc).filter((value): value is string => Boolean(value)))
     setBatchMeta({
       name: file.name,
       uploadedAt: new Date().toLocaleString('en-IN', {
@@ -163,9 +168,9 @@ export function PayoutsSurface() {
         ...r,
         status: 'processing',
         status_details: {
-          description: 'Dispatch accepted on recommended HDFC NEFT rail.',
-          source: 'razorpay',
-          reason: 'neft_dispatch',
+          description: 'Dispatch accepted on the router-selected PSP and rail.',
+          source: 'zord-router',
+          reason: 'route_approved',
         },
       })),
     )
@@ -180,6 +185,7 @@ export function PayoutsSurface() {
     setModalOpen(false)
     setBulkRows([])
     setBatchMeta(null)
+    setFileIfscs([])
     setPhase('idle')
   }, [phase])
 
@@ -188,23 +194,16 @@ export function PayoutsSurface() {
       fileName: batchMeta?.name || 'bulk_payout_batch.csv',
       rows: bulkRows,
       uploadedAt: batchMeta?.uploadedAt || '—',
+      ifscs: fileIfscs,
     })
-    /** Demo showcase totals for the AI modal (table still uses working bulk rows). */
     return {
       ...base,
       batchId: 'batch-001',
-      totalRecords: Math.max(base.totalRecords, 2450),
-      totalAmountMinor: Math.max(base.totalAmountMinor, 1_723_477_600),
-      uniqueBeneficiaries: Math.max(base.uniqueBeneficiaries, 2318),
       requestedBy: 'finance.ops@merchant.in',
     }
-  }, [batchMeta, bulkRows])
+  }, [batchMeta, bulkRows, fileIfscs])
 
-  const mapped = useMemo(() => {
-    const book = rows.map(mapFinanceRowToPayoutRecon)
-    const bulk = bulkRows.map(mapFinanceRowToPayoutRecon)
-    return [...bulk, ...book]
-  }, [rows, bulkRows])
+  const mapped = useMemo(() => rows.map(mapFinanceRowToPayoutRecon), [rows])
   const kpis = useMemo(() => sumPayoutKpis(mapped), [mapped])
   const displayRows = useMemo(
     () => mapped.filter((r) => matchesStatusTab(String(r.status), tab)),
@@ -418,7 +417,7 @@ export function PayoutsSurface() {
                             <StatusBadge tone={asPayoutTone(String(row.status))}>{row.status}</StatusBadge>
                             {!isBulk ? (
                               <div className="mt-1">
-                                <PaymentProviderBadge provider={row.paymentProvider || 'razorpay'} />
+                                <PaymentProviderBadge provider={row.paymentProvider} />
                               </div>
                             ) : null}
                           </td>
@@ -452,7 +451,7 @@ export function PayoutsSurface() {
             <button
               type="button"
               className="ml-3 text-[13px] font-medium text-[#528FF0] hover:underline"
-              onClick={() => router.push('/reconciliation?demo=sandbox')}
+              onClick={() => router.push('/reconciliation')}
             >
               Open reconciliation →
             </button>

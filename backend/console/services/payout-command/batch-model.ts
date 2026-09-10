@@ -17,6 +17,7 @@ export type BatchRow = {
   invoiceNo?: string
   amount: number
   beneficiary: string
+  ifsc?: string
   status: BatchRowStatus
   stage: string
   reason: string
@@ -529,6 +530,14 @@ function parseMatrixToBatchRows(matrix: string[][]): BatchRow[] {
   const invoiceIdx = pickHeader('invoice_id', 'invoice', 'inv')
   const amountIdx = pickHeader('amount.value', 'amount', 'amount_value')
   const beneficiaryIdx = pickHeader('beneficiary.name', 'beneficiary', 'payee', 'account_number')
+  const ifscIdx = pickHeader(
+    'beneficiary.instrument.ifsc',
+    'beneficiary.ifsc',
+    'ifsc_code',
+    'ifsc',
+    'bank_ifsc',
+    'beneficiary_ifsc',
+  )
   const statusIdx = pickHeader('status')
   const reasonIdx = pickHeader('reason', 'error', 'error_detail')
 
@@ -556,6 +565,7 @@ function parseMatrixToBatchRows(matrix: string[][]): BatchRow[] {
         invoiceIdx >= 0 && cells[invoiceIdx]?.trim() ? cells[invoiceIdx].trim() : undefined,
       amount: Number.isFinite(amountValue) && amountValue > 0 ? amountValue : base.amount,
       beneficiary: beneficiaryIdx >= 0 && cells[beneficiaryIdx] ? cells[beneficiaryIdx] : base.beneficiary,
+      ifsc: ifscIdx >= 0 && cells[ifscIdx] ? cells[ifscIdx].replace(/\s+/g, '').toUpperCase() : undefined,
       status,
       stage: STAGES_BY_STATUS[status],
       reason: status === 'Failed' ? (reasonIdx >= 0 && cells[reasonIdx] ? cells[reasonIdx] : base.reason) : '-',

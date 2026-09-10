@@ -8,6 +8,15 @@ import (
 )
 
 func ReconcilePayout(in PayoutInput) FinancialResult {
+	out := reconcilePayout(in)
+	if out.Rail == "" {
+		out.Rail = NormalizeRail(in.Payout.Mode)
+	}
+	AnnotateCashFlow(&out)
+	return out
+}
+
+func reconcilePayout(in PayoutInput) FinancialResult {
 	p := in.Payout
 	status := razorpay.NormalizePayoutStatus(p.ProviderStatus)
 	now := in.Now

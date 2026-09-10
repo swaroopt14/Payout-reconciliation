@@ -1,4 +1,9 @@
-import type { FinanceReconResult, FinanceReconRow } from '@/services/payout-command/prod-api/financeTypes'
+import type {
+  FinancePayment,
+  FinancePayout,
+  FinanceReconResult,
+  FinanceReconRow,
+} from '@/services/payout-command/prod-api/financeTypes'
 import type { RazorpayPayoutStatus } from './razorpayPayoutStatus'
 
 export type PayoutSignalSource = 'beneficiary_bank' | 'business' | 'gateway' | 'internal'
@@ -397,36 +402,28 @@ export function mapFinanceRowToPayoutRecon(row: FinanceReconRow): PayoutReconDis
   const details = row.status_details
   const reasonKey = resolveReasonKey(details?.reason || row.error_code || row.reason)
   const meta = lookupReason(reasonKey, row.status || details?.reason)
+  const status = normalizePayoutStatus(row.status) || String(row.status || '').trim()
 
-  const status =
-    normalizePayoutStatus(row.status) ||
-    meta?.status ||
-    (String(row.result).toUpperCase() === 'MATCHED' ? 'processed' : 'processing')
-
-  const errorCode = details?.reason || row.error_code || meta?.reason || reasonKey || 'server_error'
-  const errorDescription =
-    details?.description || row.error_description || meta?.description || 'Insufficient evidence to score.'
-  const signalSource = details?.source || row.signal_source || meta?.source || 'internal'
-  const nextSteps = row.next_steps || meta?.nextSteps || 'NA'
-  const evidence =
-    row.evidence ||
-    `${errorDescription}${signalSource ? ` · source: ${signalSource}` : ''}`
-
+  const errorCode = details?.reason || row.error_code || (row.result && row.result !== 'MATCHED' ? reasonKey : '') || ''
+  const errorDescription = details?.description || row.error_description || meta?.description || ''
+  const signalSource = details?.source || row.signal_source || meta?.source || ''
+  const nextSteps = row.next_steps || meta?.nextSteps || ''
+  const evidence = row.evidence || errorDescription
   const payoutId = row.payout_id || row.payment_id
 
   return {
     payoutId,
     status,
-    amountMinor: row.amount_minor ?? Math.abs(row.variance_amount || 0),
-    utr: row.utr || '—',
+    amountMinor: row.amount_minor ?? 0,
+    utr: row.utr || '',
     errorCode,
     errorDescription,
     signalSource,
     evidence,
-    nextSteps: nextSteps === 'NA' ? '—' : nextSteps,
-    result: row.result,
-    reason: reasonKey || errorCode,
-    contact: row.contact || '—',
+    nextSteps: nextSteps === 'NA' ? '' : nextSteps,
+    result: row.result || '',
+    reason: reasonKey || errorCode || row.reason || '',
+    contact: row.contact || '',
     varianceMinor: row.variance_amount || 0,
     settlement: row.settlement,
     bank: row.bank,
@@ -446,11 +443,54 @@ export function mapFinanceRowToPayoutRecon(row: FinanceReconRow): PayoutReconDis
           source: details.source,
           reason: details.reason,
         }
-      : {
-          description: errorDescription,
-          source: signalSource,
-          reason: errorCode,
-        },
+      : undefined,
+  }
+}
+
+function unixFromIso(value?: string | null): number | undefined {
+  if (!value) return undefined
+  const ms = Date.parse(value)
+  if (!Number.isFinite(ms)) return undefined
+  return Math.floor(ms / 1000)
+}
+
+export function mapPayoutResponseToReconRow(payout: FinancePayout): FinanceReconRow {
+  const rec = payout.reconciliation
+  const created = unixFromIso(payout.provider_created_at)
+  return {
+    payment_id: payout.payout_id,
+    payout_id: payout.payout_id,
+    settlement: null,
+    bank: rec?.bank_credit_proven ?? null,
+    result: rec?.result || '',
+    variance_amount: rec?.variance_amount ?? 0,
+    reason: rec?.reason,
+    status: payout.provider_status || payout.status,
+    utr: payout.utr ?? null,
+    amount_minor: payout.amount_minor,
+    currency: payout.currency,
+    mode: payout.mode,
+    purpose: payout.purpose,
+    created_at: created,
+    error_code: payout.status_reason,
+  }
+}
+
+export function mapPaymentResponseToReconRow(payment: FinancePayment): FinanceReconRow {
+  const rec = payment.reconciliation
+  const created = unixFromIso(payment.provider_created_at)
+  return {
+    payment_id: payment.payment_id,
+    settlement: rec?.bank_credit_proven != null ? rec.bank_credit_proven : null,
+    bank: rec?.bank_credit_proven ?? null,
+    result: rec?.result || '',
+    variance_amount: rec?.variance_amount ?? 0,
+    reason: rec?.reason,
+    status: payment.provider_status || payment.status,
+    amount_minor: payment.amount_minor,
+    currency: payment.currency,
+    created_at: created,
+    payment_provider: payment.provider,
   }
 }
 

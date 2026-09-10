@@ -1,0 +1,71 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: zord-router-postgres
+    environment:
+      POSTGRES_USER: router
+      POSTGRES_PASSWORD: router
+      POSTGRES_DB: zord_router
+    ports:
+      - "5434:5432"
+    volumes:
+      - zord_router_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U router -d zord_router"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    networks:
+      - zord-network
+
+  redis:
+    image: redis:7.2-alpine
+    container_name: zord-router-redis
+    ports:
+      - "6381:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+    networks:
+      - zord-network
+
+  zord-router:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: zord-router:v1
+    container_name: zord-router
+    ports:
+      - "8091:8091"
+    environment:
+      - PORT=8091
+      - DATABASE_URL=postgres://router:router@postgres:5432/zord_router
+      - REDIS_URL=redis://redis:6379/0
+      - RUST_LOG=info
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8091/v1/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks:
+      - zord-network
+
+volumes:
+  zord_router_pg:
+
+networks:
+  zord-network:
+    external: true
+    name: zord-shared-network

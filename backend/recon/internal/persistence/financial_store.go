@@ -117,6 +117,7 @@ func toPaymentFact(pay paymenttruth.CanonicalPayment) recon.PaymentFact {
 		Captured:          pay.Captured,
 		AmountMinor:       pay.AmountMinor,
 		Currency:          pay.Currency,
+		Method:            pay.Method,
 		ProviderCreatedAt: pay.ProviderCreatedAt,
 		FirstObservedAt:   pay.FirstObservedAt,
 		Sources:           pay.Sources,
@@ -162,12 +163,17 @@ func (s *ReconSQLStore) InsertReconciliationRun(ctx context.Context, run recon.R
 	if run.Counts == nil {
 		counts = []byte("{}")
 	}
+	eids, _ := json.Marshal(run.EntityIDs)
+	if run.EntityIDs == nil {
+		eids = []byte("[]")
+	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO reconciliation_runs (
-			id, tenant_id, connector_id, account_id, status, payment_count, matched_count, exception_count, counts, created_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+			id, tenant_id, connector_id, account_id, status, payment_count, matched_count, exception_count, counts, created_at, batch_id, entity_ids
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
 		run.ID, run.TenantID, run.ConnectorID, run.AccountID, run.Status,
 		run.PaymentCount, run.MatchedCount, run.ExceptionCount, counts, run.CreatedAt,
+		run.BatchID, eids,
 	)
 	return run, err
 }
@@ -177,37 +183,72 @@ func (s *ReconSQLStore) CompleteReconciliationRun(ctx context.Context, run recon
 	if run.Counts == nil {
 		counts = []byte("{}")
 	}
+	eids, _ := json.Marshal(run.EntityIDs)
+	if run.EntityIDs == nil {
+		eids = []byte("[]")
+	}
 	completed := run.CompletedAt
 	if completed.IsZero() {
 		completed = time.Now().UTC()
 	}
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE reconciliation_runs
-		SET status=$2, payment_count=$3, matched_count=$4, exception_count=$5, counts=$6, completed_at=$7
+		SET status=$2, payment_count=$3, matched_count=$4, exception_count=$5, counts=$6, completed_at=$7, entity_ids=$8
 		WHERE id=$1`,
-		run.ID, run.Status, run.PaymentCount, run.MatchedCount, run.ExceptionCount, counts, completed,
+		run.ID, run.Status, run.PaymentCount, run.MatchedCount, run.ExceptionCount, counts, completed, eids,
 	)
 	return err
 }
 
 func (s *ReconSQLStore) GetReconciliationRun(ctx context.Context, tenantID, runID string) (recon.ReconciliationRun, error) {
 	var run recon.ReconciliationRun
-	var counts []byte
+	var counts, eids []byte
 	var completed sql.NullTime
 	err := s.db.QueryRowContext(ctx, `
 		SELECT id::text, tenant_id::text, connector_id::text, account_id, status,
-			payment_count, matched_count, exception_count, counts, created_at, completed_at
+			payment_count, matched_count, exception_count, counts, created_at, completed_at,
+			COALESCE(batch_id,''), COALESCE(entity_ids, '[]'::jsonb)
 		FROM reconciliation_runs WHERE id=$1 AND tenant_id=$2`, runID, tenantID,
 	).Scan(&run.ID, &run.TenantID, &run.ConnectorID, &run.AccountID, &run.Status,
-		&run.PaymentCount, &run.MatchedCount, &run.ExceptionCount, &counts, &run.CreatedAt, &completed)
+		&run.PaymentCount, &run.MatchedCount, &run.ExceptionCount, &counts, &run.CreatedAt, &completed,
+		&run.BatchID, &eids)
 	if err != nil {
 		return recon.ReconciliationRun{}, err
 	}
 	_ = json.Unmarshal(counts, &run.Counts)
+	_ = json.Unmarshal(eids, &run.EntityIDs)
 	if completed.Valid {
 		run.CompletedAt = completed.Time
 	}
 	return run, nil
+}
+
+func (s *ReconSQLStore) GetLatestReconciliationRunByBatch(ctx context.Context, tenantID, connectorID, batchID string) (recon.ReconciliationRun, bool, error) {
+	var run recon.ReconciliationRun
+	var counts, eids []byte
+	var completed sql.NullTime
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id::text, tenant_id::text, connector_id::text, account_id, status,
+			payment_count, matched_count, exception_count, counts, created_at, completed_at,
+			COALESCE(batch_id,''), COALESCE(entity_ids, '[]'::jsonb)
+		FROM reconciliation_runs
+		WHERE tenant_id=$1 AND connector_id=$2 AND batch_id=$3
+		ORDER BY created_at DESC LIMIT 1`, tenantID, connectorID, batchID,
+	).Scan(&run.ID, &run.TenantID, &run.ConnectorID, &run.AccountID, &run.Status,
+		&run.PaymentCount, &run.MatchedCount, &run.ExceptionCount, &counts, &run.CreatedAt, &completed,
+		&run.BatchID, &eids)
+	if errors.Is(err, sql.ErrNoRows) {
+		return recon.ReconciliationRun{}, false, nil
+	}
+	if err != nil {
+		return recon.ReconciliationRun{}, false, err
+	}
+	_ = json.Unmarshal(counts, &run.Counts)
+	_ = json.Unmarshal(eids, &run.EntityIDs)
+	if completed.Valid {
+		run.CompletedAt = completed.Time
+	}
+	return run, true, nil
 }
 
 func (s *ReconSQLStore) UpsertReconciliationResult(ctx context.Context, tenantID, connectorID, runID string, r recon.FinancialResult) (recon.FinancialResult, error) {
@@ -261,16 +302,17 @@ func (s *ReconSQLStore) GetReconciliationResult(ctx context.Context, tenantID, c
 	var r recon.FinancialResult
 	var cands, refs []byte
 	var runID sql.NullString
+	var created sql.NullTime
 	err := s.db.QueryRowContext(ctx, `
 		SELECT id::text, COALESCE(run_id::text,''), entity_type, entity_id, status, result,
 			expected_amount_minor, observed_amount_minor, variance_amount_minor, confidence, reason,
-			candidate_ids, evidence_refs, bank_credit_proven
+			candidate_ids, evidence_refs, bank_credit_proven, created_at
 		FROM reconciliation_results
 		WHERE tenant_id=$1 AND connector_id=$2 AND entity_type=$3 AND entity_id=$4`,
 		tenantID, connectorID, entityType, entityID,
 	).Scan(&r.ID, &runID, &r.EntityType, &r.EntityID, &r.Status, &r.Result,
 		&r.ExpectedAmount, &r.ObservedAmount, &r.VarianceAmount, &r.Confidence, &r.Reason,
-		&cands, &refs, &r.BankCreditProven)
+		&cands, &refs, &r.BankCreditProven, &created)
 	if errors.Is(err, sql.ErrNoRows) {
 		return recon.FinancialResult{}, false, nil
 	}
@@ -280,6 +322,9 @@ func (s *ReconSQLStore) GetReconciliationResult(ctx context.Context, tenantID, c
 	r.RunID = runID.String
 	_ = json.Unmarshal(cands, &r.CandidateIDs)
 	_ = json.Unmarshal(refs, &r.EvidenceRefs)
+	if created.Valid {
+		r.CreatedAt = created.Time
+	}
 	return r, true, nil
 }
 
@@ -287,7 +332,7 @@ func (s *ReconSQLStore) ListReconciliationResults(ctx context.Context, tenantID,
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id::text, COALESCE(run_id::text,''), entity_type, entity_id, status, result,
 			expected_amount_minor, observed_amount_minor, variance_amount_minor, confidence, reason,
-			candidate_ids, evidence_refs, bank_credit_proven
+			candidate_ids, evidence_refs, bank_credit_proven, created_at
 		FROM reconciliation_results
 		WHERE tenant_id=$1 AND connector_id=$2
 		ORDER BY entity_type, entity_id`, tenantID, connectorID)
@@ -300,14 +345,18 @@ func (s *ReconSQLStore) ListReconciliationResults(ctx context.Context, tenantID,
 		var r recon.FinancialResult
 		var cands, refs []byte
 		var runID sql.NullString
+		var created sql.NullTime
 		if err := rows.Scan(&r.ID, &runID, &r.EntityType, &r.EntityID, &r.Status, &r.Result,
 			&r.ExpectedAmount, &r.ObservedAmount, &r.VarianceAmount, &r.Confidence, &r.Reason,
-			&cands, &refs, &r.BankCreditProven); err != nil {
+			&cands, &refs, &r.BankCreditProven, &created); err != nil {
 			return nil, err
 		}
 		r.RunID = runID.String
 		_ = json.Unmarshal(cands, &r.CandidateIDs)
 		_ = json.Unmarshal(refs, &r.EvidenceRefs)
+		if created.Valid {
+			r.CreatedAt = created.Time
+		}
 		out = append(out, r)
 	}
 	return out, rows.Err()
@@ -452,6 +501,33 @@ func (s *ReconSQLStore) GetInvestigation(ctx context.Context, tenantID, connecto
 	rec.ExceptionID = exID.String
 	_ = json.Unmarshal(eids, &rec.EvidenceIDs)
 	return rec, true, nil
+}
+
+func (s *ReconSQLStore) ListInvestigations(ctx context.Context, tenantID, connectorID string) ([]recon.InvestigationRecord, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id::text, tenant_id::text, connector_id::text, COALESCE(exception_id,''), entity_type, entity_id, status,
+			root_cause, recommendation, confidence, financial_impact, evidence_ids, created_at, updated_at
+		FROM investigation_records
+		WHERE tenant_id=$1 AND connector_id=$2
+		ORDER BY created_at DESC`, tenantID, connectorID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []recon.InvestigationRecord
+	for rows.Next() {
+		var rec recon.InvestigationRecord
+		var eids []byte
+		var exID sql.NullString
+		if err := rows.Scan(&rec.ID, &rec.TenantID, &rec.ConnectorID, &exID, &rec.EntityType, &rec.EntityID, &rec.Status,
+			&rec.RootCause, &rec.Recommendation, &rec.Confidence, &rec.FinancialImpact, &eids, &rec.CreatedAt, &rec.UpdatedAt); err != nil {
+			return nil, err
+		}
+		rec.ExceptionID = exID.String
+		_ = json.Unmarshal(eids, &rec.EvidenceIDs)
+		out = append(out, rec)
+	}
+	return out, rows.Err()
 }
 
 func (s *ReconSQLStore) ListRefunds(ctx context.Context, tenantID, connectorID, paymentID string) ([]recon.RefundFact, error) {

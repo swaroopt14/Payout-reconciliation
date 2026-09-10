@@ -33,6 +33,7 @@ import { AiRouteRecommendationModal } from '../../finance-ops/AiRouteRecommendat
 import {
   buildBulkBatchSummary,
   mockBulkPayoutRows,
+  receiverBanksFromIfscs,
   type RoutingPhase,
 } from '../../finance-ops/bulkRouteDemo'
 
@@ -204,7 +205,9 @@ export default function BatchCommandCenterClient() {
   const failuresTabHref = useMemo(() => '/exceptions?demo=sandbox', [])
 
   const aiRouteSummary = useMemo(() => {
-    const mock = mockBulkPayoutRows(24, aiRouteFileName)
+    const parsed = intentFilePreviewRows
+    const mock = mockBulkPayoutRows(Math.max(parsed.length, 8), aiRouteFileName)
+    const ifscs = parsed.map((r) => r.ifsc)
     const base = buildBulkBatchSummary({
       fileName: aiRouteFileName,
       rows: mock,
@@ -214,16 +217,24 @@ export default function BatchCommandCenterClient() {
         hour: '2-digit',
         minute: '2-digit',
       }),
+      ifscs,
     })
+    const amountMinor = parsed.length
+      ? parsed.reduce((sum, row) => sum + Math.round((Number(row.amount) || 0) * 100), 0)
+      : base.totalAmountMinor
     return {
       ...base,
       batchId: activeBatchId || 'batch-001',
-      totalRecords: Math.max(base.totalRecords, 2450),
-      totalAmountMinor: Math.max(base.totalAmountMinor, 1_723_477_600),
-      uniqueBeneficiaries: Math.max(base.uniqueBeneficiaries, 2318),
+      totalRecords: parsed.length || base.totalRecords,
+      totalAmountMinor: amountMinor,
+      uniqueBeneficiaries: parsed.length
+        ? new Set(parsed.map((row) => row.beneficiary || row.refId)).size
+        : base.uniqueBeneficiaries,
+      receiverBanks: receiverBanksFromIfscs(ifscs),
+      receiverIfscCount: ifscs.filter(Boolean).length,
       requestedBy: 'finance.ops@merchant.in',
     }
-  }, [aiRouteFileName, activeBatchId])
+  }, [aiRouteFileName, activeBatchId, intentFilePreviewRows])
 
   const onAiAnalyzeComplete = useCallback(() => {
     setAiRoutePhase('ready')

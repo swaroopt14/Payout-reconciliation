@@ -1,0 +1,18 @@
+[package]
+name = "zord-router"
+version = "0.1.0"
+edition = "2021"
+description = "Intelligent PSP + rail router. Selects a connector; recon still owns MATCHED. ML never invents rupees."
+
+[dependencies]
+axum = "0.7"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "time", "sync"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "json"] }
+redis = { version = "0.27", default-features = false, features = ["tokio-comp", "connection-manager", "aio"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt"] }
+tower-http = { version = "0.5", features = ["trace", "timeout"] }
+tower = { version = "0.5", features = ["timeout"] }
+http = "1"

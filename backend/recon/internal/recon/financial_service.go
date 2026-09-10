@@ -27,6 +27,7 @@ type FinancialStore interface {
 	InsertReconciliationRun(ctx context.Context, run ReconciliationRun) (ReconciliationRun, error)
 	CompleteReconciliationRun(ctx context.Context, run ReconciliationRun) error
 	GetReconciliationRun(ctx context.Context, tenantID, runID string) (ReconciliationRun, error)
+	GetLatestReconciliationRunByBatch(ctx context.Context, tenantID, connectorID, batchID string) (ReconciliationRun, bool, error)
 	UpsertReconciliationResult(ctx context.Context, tenantID, connectorID, runID string, r FinancialResult) (FinancialResult, error)
 	GetReconciliationResult(ctx context.Context, tenantID, connectorID, entityType, entityID string) (FinancialResult, bool, error)
 	InsertReconciliationException(ctx context.Context, tenantID, connectorID, runID string, ex ReconciliationException) (ReconciliationException, error)
@@ -35,6 +36,7 @@ type FinancialStore interface {
 	GetReconciliationException(ctx context.Context, tenantID, connectorID, id string) (ReconciliationException, bool, error)
 	InsertInvestigation(ctx context.Context, rec InvestigationRecord) (InvestigationRecord, error)
 	GetInvestigation(ctx context.Context, tenantID, connectorID, id string) (InvestigationRecord, bool, error)
+	ListInvestigations(ctx context.Context, tenantID, connectorID string) ([]InvestigationRecord, error)
 	InsertMatchOutbox(ctx context.Context, row models.OutboxRow) error
 }
 
@@ -51,6 +53,8 @@ type FinancialRunRequest struct {
 	TenantID    string
 	ConnectorID string
 	AccountID   string
+	BatchID     string
+	PayoutIDs   []string
 }
 
 func (s *FinancialService) Run(ctx context.Context, req FinancialRunRequest) (ReconciliationRun, []FinancialResult, error) {
@@ -59,6 +63,7 @@ func (s *FinancialService) Run(ctx context.Context, req FinancialRunRequest) (Re
 		TenantID:    req.TenantID,
 		ConnectorID: req.ConnectorID,
 		AccountID:   req.AccountID,
+		BatchID:     strings.TrimSpace(req.BatchID),
 		Status:      "running",
 		Counts:      map[string]int{},
 		CreatedAt:   now,
@@ -86,6 +91,12 @@ func (s *FinancialService) Run(ctx context.Context, req FinancialRunRequest) (Re
 	allRefunds, err := s.Store.ListRefunds(ctx, req.TenantID, req.ConnectorID, "")
 	if err != nil {
 		return run, nil, err
+	}
+
+	wantPayout := payoutIDSet(req.PayoutIDs)
+	scoped := len(wantPayout) > 0
+	if scoped {
+		pays = nil
 	}
 
 	linesByPay := indexSettlementByPayment(lines)
@@ -139,6 +150,15 @@ func (s *FinancialService) Run(ctx context.Context, req FinancialRunRequest) (Re
 	if err != nil {
 		return run, nil, err
 	}
+	if scoped {
+		filtered := make([]PayoutFact, 0, len(wantPayout))
+		for _, po := range payouts {
+			if _, ok := wantPayout[po.PayoutID]; ok {
+				filtered = append(filtered, po)
+			}
+		}
+		payouts = filtered
+	}
 	for _, po := range payouts {
 		events, err := s.Store.ListPayoutObservationFacts(ctx, req.TenantID, req.ConnectorID, po.PayoutID)
 		if err != nil {
@@ -154,30 +174,32 @@ func (s *FinancialService) Run(ctx context.Context, req FinancialRunRequest) (Re
 
 	results = applySharedBankAmbiguity(results)
 
-	for _, d := range decisions {
-		if d.State != BankMatchOrphanBank {
-			continue
+	if !scoped {
+		for _, d := range decisions {
+			if d.State != BankMatchOrphanBank {
+				continue
+			}
+			b, ok := bankByID[d.BankObservationID]
+			if !ok {
+				continue
+			}
+			if _, used := usedBanks[b.ID]; used {
+				continue
+			}
+			fr := OrphanBankResult(b)
+			fr.EvidenceRefs.SettlementBankDecisionID = d.ID
+			if fr.Exception != nil {
+				fr.Exception.EvidenceRefs = fr.EvidenceRefs
+				fr.Exception.EvidenceIDs = EvidenceIDList(fr.EvidenceRefs)
+			}
+			markUsedBanks(usedBanks, fr)
+			results = append(results, fr)
 		}
-		b, ok := bankByID[d.BankObservationID]
-		if !ok {
-			continue
+		for _, b := range UnusedCreditBanks(banks, usedBanks) {
+			fr := OrphanBankResult(b)
+			markUsedBanks(usedBanks, fr)
+			results = append(results, fr)
 		}
-		if _, used := usedBanks[b.ID]; used {
-			continue
-		}
-		fr := OrphanBankResult(b)
-		fr.EvidenceRefs.SettlementBankDecisionID = d.ID
-		if fr.Exception != nil {
-			fr.Exception.EvidenceRefs = fr.EvidenceRefs
-			fr.Exception.EvidenceIDs = EvidenceIDList(fr.EvidenceRefs)
-		}
-		markUsedBanks(usedBanks, fr)
-		results = append(results, fr)
-	}
-	for _, b := range UnusedCreditBanks(banks, usedBanks) {
-		fr := OrphanBankResult(b)
-		markUsedBanks(usedBanks, fr)
-		results = append(results, fr)
 	}
 
 	counts := map[string]int{}
@@ -215,6 +237,11 @@ func (s *FinancialService) Run(ctx context.Context, req FinancialRunRequest) (Re
 	run.ExceptionCount = exceptions
 	run.Counts = counts
 	run.CompletedAt = s.now()
+	ids := make([]string, 0, len(persisted))
+	for _, fr := range persisted {
+		ids = append(ids, fr.EntityID)
+	}
+	run.EntityIDs = ids
 	if err := s.Store.CompleteReconciliationRun(ctx, run); err != nil {
 		return run, persisted, err
 	}
@@ -231,8 +258,17 @@ func (s *FinancialService) GetPayment(ctx context.Context, tenantID, connectorID
 		return pay, FinancialResult{}, false, err
 	}
 	if !found {
-		return pay, FinancialResult{EntityType: EntityPayment, EntityID: paymentID, Status: pay.CanonicalStatus, Result: ResultUnresolved, Reason: "not_run"}, true, nil
+		fr := FinancialResult{EntityType: EntityPayment, EntityID: paymentID, Status: pay.CanonicalStatus, Result: ResultUnresolved, Reason: "not_run", Rail: NormalizeRail(pay.Method)}
+		AnnotateCashFlow(&fr)
+		return pay, fr, true, nil
 	}
+	if fr.Rail == "" {
+		fr.Rail = NormalizeRail(pay.Method)
+	}
+	if fr.EntityType == "" {
+		fr.EntityType = EntityPayment
+	}
+	AnnotateCashFlow(&fr)
 	return pay, fr, true, nil
 }
 
@@ -246,9 +282,91 @@ func (s *FinancialService) GetPayout(ctx context.Context, tenantID, connectorID,
 		return po, FinancialResult{}, false, err
 	}
 	if !found {
-		return po, FinancialResult{EntityType: EntityPayout, EntityID: payoutID, Status: po.ProviderStatus, Result: ResultUnresolved, Reason: "not_run"}, true, nil
+		fr := FinancialResult{EntityType: EntityPayout, EntityID: payoutID, Status: po.ProviderStatus, Result: ResultUnresolved, Reason: "not_run", Rail: NormalizeRail(po.Mode)}
+		AnnotateCashFlow(&fr)
+		return po, fr, true, nil
 	}
+	if fr.Rail == "" {
+		fr.Rail = NormalizeRail(po.Mode)
+	}
+	if fr.EntityType == "" {
+		fr.EntityType = EntityPayout
+	}
+	AnnotateCashFlow(&fr)
 	return po, fr, true, nil
+}
+
+func (s *FinancialService) PayoutTimeline(ctx context.Context, tenantID, connectorID, payoutID string) (EntityTimeline, bool, error) {
+	po, ok, err := s.Store.GetCanonicalPayoutFact(ctx, tenantID, connectorID, payoutID)
+	if err != nil || !ok {
+		return EntityTimeline{}, ok, err
+	}
+	events, err := s.Store.ListPayoutObservationFacts(ctx, tenantID, connectorID, po.PayoutID)
+	if err != nil {
+		return EntityTimeline{}, false, err
+	}
+	return s.buildTimeline(ctx, tenantID, connectorID, timelineFacts{
+		EntityType:        EntityPayout,
+		EntityID:          po.PayoutID,
+		ProviderStatus:    po.ProviderStatus,
+		AmountMinor:       po.AmountMinor,
+		Currency:          po.Currency,
+		UTR:               po.UTR,
+		Mode:              po.Mode,
+		ProviderCreatedAt: po.ProviderCreatedAt,
+		FirstObservedAt:   po.FirstObservedAt,
+		Events:            events,
+	})
+}
+
+func (s *FinancialService) PaymentTimeline(ctx context.Context, tenantID, connectorID, paymentID string) (EntityTimeline, bool, error) {
+	pay, ok, err := s.Store.GetCanonicalPayment(ctx, tenantID, connectorID, paymentID)
+	if err != nil || !ok {
+		return EntityTimeline{}, ok, err
+	}
+	events, err := s.Store.ListObservationEvents(ctx, tenantID, connectorID, pay.PaymentID)
+	if err != nil {
+		return EntityTimeline{}, false, err
+	}
+	return s.buildTimeline(ctx, tenantID, connectorID, timelineFacts{
+		EntityType:        EntityPayment,
+		EntityID:          pay.PaymentID,
+		ProviderStatus:    pay.ProviderStatus,
+		AmountMinor:       pay.AmountMinor,
+		Currency:          pay.Currency,
+		Mode:              pay.Method,
+		ProviderCreatedAt: pay.ProviderCreatedAt,
+		FirstObservedAt:   pay.FirstObservedAt,
+		Events:            events,
+	})
+}
+
+func (s *FinancialService) buildTimeline(ctx context.Context, tenantID, connectorID string, facts timelineFacts) (EntityTimeline, bool, error) {
+	lines, err := s.Store.ListSettlementLines(ctx, tenantID, connectorID)
+	if err != nil {
+		return EntityTimeline{}, false, err
+	}
+	banks, err := s.Store.ListBankTxns(ctx, tenantID, connectorID, "")
+	if err != nil {
+		return EntityTimeline{}, false, err
+	}
+	fr, found, err := s.Store.GetReconciliationResult(ctx, tenantID, connectorID, facts.EntityType, facts.EntityID)
+	if err != nil {
+		return EntityTimeline{}, false, err
+	}
+	facts.Lines = lines
+	facts.Banks = banks
+	if found && fr.Reason != "not_run" {
+		if fr.Rail == "" {
+			fr.Rail = NormalizeRail(facts.Mode)
+		}
+		if fr.EntityType == "" {
+			fr.EntityType = facts.EntityType
+		}
+		AnnotateCashFlow(&fr)
+		facts.Result = &fr
+	}
+	return BuildEntityTimeline(facts), true, nil
 }
 
 func (s *FinancialService) Investigate(ctx context.Context, tenantID, connectorID, exceptionID, entityID string) (InvestigationRecord, error) {
@@ -661,4 +779,38 @@ func applySharedBankAmbiguity(results []FinancialResult) []FinancialResult {
 
 func normalizeUTR(s string) string {
 	return strings.ToUpper(strings.TrimSpace(s))
+}
+
+func payoutIDSet(ids []string) map[string]struct{} {
+	out := map[string]struct{}{}
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id != "" {
+			out[id] = struct{}{}
+		}
+	}
+	return out
+}
+
+func (s *FinancialService) BatchClose(ctx context.Context, tenantID, connectorID, batchID string) (BatchClose, bool, error) {
+	batchID = strings.TrimSpace(batchID)
+	if batchID == "" {
+		return BatchClose{}, false, nil
+	}
+	run, ok, err := s.Store.GetLatestReconciliationRunByBatch(ctx, tenantID, connectorID, batchID)
+	if err != nil || !ok {
+		return BatchClose{}, ok, err
+	}
+	results, err := s.Store.ListReconciliationResults(ctx, tenantID, connectorID)
+	if err != nil {
+		return BatchClose{}, false, err
+	}
+	want := payoutIDSet(run.EntityIDs)
+	filtered := make([]FinancialResult, 0, len(want))
+	for _, r := range results {
+		if _, ok := want[r.EntityID]; ok {
+			filtered = append(filtered, r)
+		}
+	}
+	return BatchCloseFromResults(batchID, run.ID, filtered, len(run.EntityIDs)), true, nil
 }

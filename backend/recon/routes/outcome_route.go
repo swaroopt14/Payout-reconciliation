@@ -39,6 +39,9 @@ func OutboxRoutes(router *gin.Engine, h *handlers.OutboxHandler) {
 }
 
 func ReconRoutes(router *gin.Engine, h *handlers.ReconHandler, imp *handlers.ImportHandler, bank *handlers.BankIngestHandler, fin *handlers.FinancialHandler, closeH *handlers.CloseHandler) {
+	if fin != nil {
+		router.GET("/v1/cash/instruments", fin.ListInstruments)
+	}
 	protected := router.Group("/v1")
 	protected.Use(auth.GinProtect())
 	{
@@ -61,9 +64,13 @@ func ReconRoutes(router *gin.Engine, h *handlers.ReconHandler, imp *handlers.Imp
 		if fin != nil {
 			protected.GET("/reconciliation/payments/:payment_id", fin.GetPayment)
 			protected.GET("/reconciliation/payments/:payment_id/evidence", fin.GetEvidence)
+			protected.GET("/reconciliation/payments/:payment_id/timeline", fin.GetPaymentTimeline)
 			protected.GET("/reconciliation/payouts/:payout_id", fin.GetPayout)
 			protected.GET("/reconciliation/payouts/:payout_id/evidence", fin.GetPayoutEvidence)
+			protected.GET("/reconciliation/payouts/:payout_id/timeline", fin.GetPayoutTimeline)
 			protected.GET("/reconciliation/sla-policy", fin.SLAPolicy)
+			protected.GET("/reconciliation/results", fin.ListResults)
+			protected.GET("/reconciliation/evaluation", fin.GetEvaluation)
 			protected.GET("/reconciliation/summary", fin.GetFinanceSummary)
 			protected.GET("/reconciliation/cash-position", fin.GetCashPosition)
 			protected.GET("/reconciliation/cash-schedule", fin.GetCashSchedule)
@@ -74,7 +81,10 @@ func ReconRoutes(router *gin.Engine, h *handlers.ReconHandler, imp *handlers.Imp
 			protected.GET("/reconciliation/exceptions/:id", fin.GetException)
 			protected.POST("/reconciliation/run", fin.Run)
 			protected.GET("/reconciliation/runs/:id", fin.GetRun)
+			protected.POST("/reconciliation/batches/:batch_id/reconcile", fin.ReconcileBatch)
+			protected.GET("/reconciliation/batches/:batch_id", fin.GetBatch)
 			protected.POST("/reconciliation/investigations", fin.CreateInvestigation)
+			protected.GET("/reconciliation/investigations", fin.ListInvestigations)
 			protected.GET("/reconciliation/investigations/:id", fin.GetInvestigation)
 			protected.GET("/reconciliation/settlements", fin.SearchSettlements)
 			protected.GET("/reconciliation/bank-transactions", fin.SearchBank)

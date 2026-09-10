@@ -1,46 +1,31 @@
 # syntax=docker/dockerfile:1.7
-# ─────────────────────────────────────────────────────────────────────────────
-# Stage 1 — builder
-# ─────────────────────────────────────────────────────────────────────────────
-FROM golang:1.25.5-bookworm AS builder
+# Sarama is pure Go — no librdkafka / CGO.
+FROM golang:1.25.7-alpine AS builder
 
-WORKDIR /build
+RUN apk add --no-cache ca-certificates git
 
-# Cache dependency downloads separately from source changes.
+WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
-
-# Copy source.
 COPY . .
 
-# Build a statically linked binary.
-# CGO_ENABLED=1 is required by confluent-kafka-go (librdkafka).
-RUN CGO_ENABLED=1 go build \
-    -ldflags="-s -w -extldflags '-static'" \
-    -trimpath \
-    -o /relay \
-    ./cmd
+RUN CGO_ENABLED=0 GOOS=linux \
+    go build -trimpath -ldflags "-s -w" -o /out/relay ./cmd
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Stage 2 — runtime (Debian slim for librdkafka compatibility)
-# ─────────────────────────────────────────────────────────────────────────────
-FROM debian:bookworm-slim AS runtime
+FROM alpine:3.19
 
-# Install CA certs (required for TLS to Kafka) and nothing else.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+RUN apk add --no-cache ca-certificates wget \
+    && adduser -D -u 65532 nonroot \
+    && mkdir -p /etc/relay
 
-# Non-root user.
-RUN useradd --uid 10001 --no-create-home --shell /bin/false relay
-USER relay
+WORKDIR /app
+COPY --from=builder /out/relay /app/relay
+COPY --from=builder /src/config.yaml /app/config.yaml
+COPY --from=builder /src/config.yaml /etc/relay/config.yaml
 
-# Copy the relay binary and config from the builder stage
-COPY --from=builder /relay /relay
-COPY --from=builder /build/config.yaml /config.yaml
-
-# Expose the relay metrics and health server port used by Kubernetes.
+ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+USER 65532:65532
 EXPOSE 8082
-
-# Entry point to run the relay service (it will read Kafka config from ENV vars)
-ENTRYPOINT ["/relay"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD wget -qO- http://127.0.0.1:8082/health || exit 1
+ENTRYPOINT ["/app/relay"]

@@ -13,6 +13,7 @@ import { ErrorInvestigationPanel } from './ErrorInvestigationPanel'
 import { buildRazorpayXError } from './razorpayXErrors'
 import { PayoutLifecycleView } from './PayoutLifecycleView'
 import { buildPayoutLifecycle, reconRowFromPayoutDetail } from './payoutLifecycleModel'
+import { useFinanceTimeline } from './FinanceTimelineLadder'
 
 export type RazorpayPayoutDetail = {
   id: string
@@ -139,6 +140,10 @@ export function PayoutDetailDrawer({
   const payout = payoutDetailFromIntentRow(row)
   const status = payout.status as RazorpayPayoutStatus
   const amountMajor = payout.amount / 100
+  const { timeline, loading: timelineLoading } = useFinanceTimeline(
+    payout.id.startsWith('pay_') ? 'payments' : 'payouts',
+    payout.id,
+  )
 
   return (
     <aside
@@ -220,7 +225,9 @@ export function PayoutDetailDrawer({
             life={buildPayoutLifecycle(reconRowFromPayoutDetail(payout))}
             variant="drawer"
             initialTab="events"
-            traceHref={`/reconciliation/${encodeURIComponent(payout.id)}?demo=sandbox`}
+            traceHref={`/reconciliation/${encodeURIComponent(payout.id)}`}
+            capturedTimeline={timeline}
+            timelineLoading={timelineLoading}
           />
         </section>
 
@@ -235,7 +242,7 @@ export function PayoutDetailDrawer({
             field: payout.status_details?.reason?.includes('account') ? 'account_number' : null,
           })}
           financialImpactMinor={payout.amount}
-          confidence={0.91}
+          confidence={undefined}
           autoStart={
             String(payout.status || '').toLowerCase() === 'failed' ||
             String(payout.status || '').toLowerCase() === 'reversed'

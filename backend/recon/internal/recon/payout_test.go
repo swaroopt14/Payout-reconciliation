@@ -135,3 +135,37 @@ func TestFinancialRunIncludesPayoutsAndEmitsDecision(t *testing.T) {
 		t.Fatalf("outbox=%+v", store.Outbox)
 	}
 }
+
+func TestFinancialRunScopedToPayoutIDsSkipsPayments(t *testing.T) {
+	store := NewMemoryFinancialStore()
+	store.Payments = []PaymentFact{{
+		PaymentID: "pay_keep", CanonicalStatus: PaymentCaptured, ProviderStatus: "captured",
+		Captured: true, AmountMinor: 10000, Currency: "INR",
+	}}
+	store.Payouts = []PayoutFact{
+		{PayoutID: "pout_in", ProviderStatus: razorpay.PayoutFailed, AmountMinor: 1},
+		{PayoutID: "pout_out", ProviderStatus: razorpay.PayoutFailed, AmountMinor: 2},
+	}
+	svc := NewFinancialService(store)
+	run, results, err := svc.Run(context.Background(), FinancialRunRequest{
+		TenantID: "11111111-1111-1111-1111-111111111111", ConnectorID: "c",
+		BatchID: "BATCH-001", PayoutIDs: []string{"pout_in"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.BatchID != "BATCH-001" {
+		t.Fatalf("batch=%s", run.BatchID)
+	}
+	if len(results) != 1 || results[0].EntityID != "pout_in" {
+		t.Fatalf("%+v", results)
+	}
+	closeDoc := BatchCloseFromResults(run.BatchID, run.ID, results, 1)
+	if closeDoc.Records != 1 || closeDoc.Unlinked != 0 {
+		t.Fatalf("%+v", closeDoc)
+	}
+	got, ok, err := svc.BatchClose(context.Background(), "11111111-1111-1111-1111-111111111111", "c", "BATCH-001")
+	if err != nil || !ok || got.RunID != run.ID {
+		t.Fatalf("close=%+v ok=%v err=%v", got, ok, err)
+	}
+}

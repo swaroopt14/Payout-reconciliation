@@ -109,6 +109,20 @@ export const BACKEND_SERVICES = {
     },
   },
 
+  // zord-router: intelligent rail + PSP routing (Port 8091)
+  ROUTER: {
+    BASE_URL: process.env.ZORD_ROUTER_URL || 'http://localhost:8091',
+    ENDPOINTS: {
+      HEALTH: '/v1/health',
+      READY: '/ready',
+      ROUTE: '/v1/routing/route',
+      OUTCOME: '/v1/routing/outcome',
+      PROCESSORS: '/v1/processors',
+      RULES: '/v1/routing/rules',
+      METRICS: '/metrics',
+    },
+  },
+
   // zord-evidence: evidence packs + Merkle (Port 8088)
   EVIDENCE: {
     BASE_URL: process.env.ZORD_EVIDENCE_URL || 'http://localhost:8088',

@@ -14,6 +14,7 @@ import (
 	"zord-relay/db"
 	"zord-relay/internal/health"
 	"zord-relay/internal/operator"
+	"zord-relay/internal/railrouter"
 	"zord-relay/kafka"
 	"zord-relay/logger"
 	"zord-relay/psp"
@@ -118,7 +119,7 @@ func run() error {
 		// config.validate() should have caught this already, but guard defensively.
 		return fmt.Errorf(
 			"RELAY_TOKEN_ENCLAVE_BASE_URL is not set; " +
-				"the relay service cannot start without a real token enclave. " ,
+				"the relay service cannot start without a real token enclave. ",
 		)
 	}
 	tokenClient, tokenClientErr := services.NewHTTPTokenClientWithConnectivityCheck(
@@ -182,6 +183,10 @@ func run() error {
 		hashVerifier,
 		dispatchLoopCfg,
 	)
+	if u := strings.TrimSpace(cfg.Dispatch.RouterURL); u != "" {
+		dispatchLoop.SetRouter(railrouter.New(u, 2*time.Second))
+		log.Info("rail router enabled", zap.String("url", u))
+	}
 
 	// ── Dispatch Consumer (Kafka → DispatchLoop) ─────────────────────────────
 	dispatchConsumerCfg := &services.DispatchConsumerConfig{

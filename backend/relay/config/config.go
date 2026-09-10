@@ -180,6 +180,8 @@ type DispatchConfig struct {
 	PollTimeout       time.Duration `mapstructure:"poll_timeout"`
 	ConnectorID       string        `mapstructure:"connector_id"`
 	DefaultCorridorID string        `mapstructure:"default_corridor_id"`
+	// RouterURL is zord-router (Hyperswitch-style rail/PSP selector). Empty = hardcoded connector.
+	RouterURL string `mapstructure:"router_url"`
 
 	// WorkerCount is the size of the dispatch worker pool (Gap 14).
 	// Controls max concurrent PSP calls. Default: 4.
@@ -278,6 +280,7 @@ func Load() (*Config, error) {
 	v.SetDefault("dispatch.poll_timeout", "200ms")
 	v.SetDefault("dispatch.connector_id", "razorpayx-v1")
 	v.SetDefault("dispatch.default_corridor_id", "IMPS")
+	v.SetDefault("dispatch.router_url", "")
 	v.SetDefault("dispatch.worker_count", 4)
 	v.SetDefault("dispatch.psp_circuit_breaker_threshold", 5)
 	v.SetDefault("dispatch.psp_circuit_reset_seconds", 60)
@@ -381,7 +384,7 @@ func (c *Config) validate() error {
 	if c.TokenEnclave.BaseURL == "" {
 		return fmt.Errorf(
 			"RELAY_TOKEN_ENCLAVE_BASE_URL is required: " +
-				"dispatch flows must not proceed without a real token enclave. " ,
+				"dispatch flows must not proceed without a real token enclave. ",
 		)
 	}
 	return nil

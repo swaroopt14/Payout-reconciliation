@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"zord-outcome-engine/internal/auth"
 	"zord-outcome-engine/internal/recon"
@@ -45,6 +46,15 @@ func financeRouter(t *testing.T) (*gin.Engine, *recon.MemoryFinancialStore) {
 	r.GET("/v1/reconciliation/refunds", h.ListRefunds)
 	r.GET("/v1/reconciliation/sla-policy", h.SLAPolicy)
 	r.POST("/v1/reconciliation/run", h.Run)
+	r.POST("/v1/reconciliation/batches/:batch_id/reconcile", h.ReconcileBatch)
+	r.GET("/v1/reconciliation/batches/:batch_id", h.GetBatch)
+	r.GET("/v1/reconciliation/payouts/:payout_id/timeline", h.GetPayoutTimeline)
+	r.GET("/v1/reconciliation/payments/:payment_id/timeline", h.GetPaymentTimeline)
+	r.GET("/v1/reconciliation/results", h.ListResults)
+	r.GET("/v1/reconciliation/evaluation", h.GetEvaluation)
+	r.GET("/v1/reconciliation/investigations", h.ListInvestigations)
+	r.GET("/v1/reconciliation/payouts/:payout_id", h.GetPayout)
+	r.GET("/v1/cash/instruments", h.ListInstruments)
 	return r, store
 }
 
@@ -81,8 +91,29 @@ func TestFinancePaymentJSONIncludesObservations(t *testing.T) {
 	if reconObj["bank_credit_proven"] != true {
 		t.Fatalf("recon=%v", reconObj)
 	}
+	two, _ := reconObj["two_way"].(map[string]any)
+	three, _ := reconObj["three_way"].(map[string]any)
+	if two["result"] != "MATCHED" || three["result"] != "MATCHED" {
+		t.Fatalf("legs two=%v three=%v", two, three)
+	}
 	if _, ok := body["fully_reconciled"]; ok {
 		t.Fatal("must not emit fully_reconciled")
+	}
+}
+
+func TestCashInstrumentsCatalog(t *testing.T) {
+	r, _ := financeRouter(t)
+	code, body := getJSON(t, r, "/v1/cash/instruments")
+	if code != 200 {
+		t.Fatalf("code=%d body=%v", code, body)
+	}
+	inst, ok := body["instruments"].([]any)
+	if !ok || len(inst) < 4 {
+		t.Fatalf("instruments=%v", body["instruments"])
+	}
+	psps, _ := body["psps"].([]any)
+	if len(psps) < 2 {
+		t.Fatalf("psps=%v", body["psps"])
 	}
 }
 
@@ -201,5 +232,133 @@ func TestFinanceRunJSON(t *testing.T) {
 		if _, ok := body[k]; !ok {
 			t.Fatalf("missing %s in %v", k, body)
 		}
+	}
+}
+
+func TestBatchReconcileScopesPayouts(t *testing.T) {
+	r, store := financeRouter(t)
+	store.Payouts = []recon.PayoutFact{{
+		PayoutID: "pout_1", ProviderStatus: "failed", AmountMinor: 1, Currency: "INR",
+	}}
+	req := httptest.NewRequest(http.MethodPost, "/v1/reconciliation/batches/BATCH-001/reconcile?tenant_id=t&connector_id=c",
+		strings.NewReader(`{"tenant_id":"t","connector_id":"c","payout_ids":["pout_1"]}`))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(auth.WithPrincipalForTest(req.Context(), "t"))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["batch_id"] != "BATCH-001" {
+		t.Fatalf("%v", body)
+	}
+	code, got := getJSON(t, r, "/v1/reconciliation/batches/BATCH-001?tenant_id=t&connector_id=c")
+	if code != 200 {
+		t.Fatalf("get code=%d %v", code, got)
+	}
+	if got["batch_id"] != "BATCH-001" {
+		t.Fatalf("%v", got)
+	}
+}
+
+func TestPayoutTimelineUsesCapturedWebhookTimes(t *testing.T) {
+	r, store := financeRouter(t)
+	captured := time.Date(2026, 4, 1, 10, 0, 12, 0, time.UTC)
+	store.Payouts = []recon.PayoutFact{{
+		PayoutID: "pout_1", ProviderStatus: "processed", AmountMinor: 10000, Currency: "INR", UTR: "HDFC123",
+	}}
+	store.PayoutEvents = map[string][]recon.ObservationFact{
+		"pout_1": {{
+			Source: "webhook", ProviderStatus: "processed", SourceEventID: "evt_payout",
+			RawReference: "HDFC123", ObservedAt: captured,
+		}},
+	}
+	code, body := getJSON(t, r, "/v1/reconciliation/payouts/pout_1/timeline?tenant_id=t&connector_id=c")
+	if code != 200 {
+		t.Fatalf("code=%d body=%v", code, body)
+	}
+	if body["entity_type"] != "payout" || body["entity_id"] != "pout_1" {
+		t.Fatalf("%v", body)
+	}
+	if body["reconciliation"] != nil {
+		t.Fatalf("reconciliation should be null before a run: %v", body["reconciliation"])
+	}
+	steps, _ := body["steps"].([]any)
+	if len(steps) != 14 {
+		t.Fatalf("steps=%d", len(steps))
+	}
+	created, _ := steps[1].(map[string]any)
+	if created["captured"] != true {
+		t.Fatalf("created=%v", created)
+	}
+	if got := created["captured_at"]; got != captured.UTC().Format(time.RFC3339) && got != captured.Format(time.RFC3339Nano) {
+		// encoding/json uses RFC3339Nano for times with zero nanos as RFC3339
+		if !strings.HasPrefix(strings.TrimSpace(stringify(got)), "2026-04-01T10:00:12Z") {
+			t.Fatalf("captured_at=%v", got)
+		}
+	}
+	validation, _ := steps[2].(map[string]any)
+	if validation["captured"] != false || validation["captured_at"] != nil {
+		t.Fatalf("validation should be uncaptured: %v", validation)
+	}
+}
+
+func stringify(v any) string {
+	b, _ := json.Marshal(v)
+	return string(b)
+}
+
+func TestListResultsJSONIncludesPayoutAndPayment(t *testing.T) {
+	r, store := financeRouter(t)
+	store.Payouts = []recon.PayoutFact{{
+		PayoutID: "pout_1", ProviderStatus: "processed", AmountMinor: 5000, Currency: "INR", UTR: "HDFC123", Mode: "IMPS",
+	}}
+	store.Results = append(store.Results, recon.FinancialResult{
+		EntityType: recon.EntityPayout, EntityID: "pout_1", Result: recon.ResultUnresolved, Reason: "payout_missing_bank",
+		ExpectedAmount: 5000, VarianceAmount: 5000,
+	})
+	code, body := getJSON(t, r, "/v1/reconciliation/results?tenant_id=t&connector_id=c")
+	if code != 200 {
+		t.Fatalf("code=%d body=%v", code, body)
+	}
+	rows, _ := body["results"].([]any)
+	if len(rows) != 2 {
+		t.Fatalf("results=%v", body["results"])
+	}
+	if body["records"] != float64(2) {
+		t.Fatalf("records=%v", body["records"])
+	}
+}
+
+func TestListInvestigationsJSON(t *testing.T) {
+	r, store := financeRouter(t)
+	store.Investigations = []recon.InvestigationRecord{{
+		ID: "inv_1", EntityID: "pay_1", Status: "completed", RootCause: "captured_missing_settlement", FinancialImpact: 100,
+	}}
+	code, body := getJSON(t, r, "/v1/reconciliation/investigations?tenant_id=t&connector_id=c")
+	if code != 200 {
+		t.Fatalf("code=%d body=%v", code, body)
+	}
+	list, _ := body["investigations"].([]any)
+	if len(list) != 1 {
+		t.Fatalf("investigations=%v", body["investigations"])
+	}
+}
+
+func TestEvaluationJSON(t *testing.T) {
+	r, _ := financeRouter(t)
+	code, body := getJSON(t, r, "/v1/reconciliation/evaluation?tenant_id=t&connector_id=c")
+	if code != 200 {
+		t.Fatalf("code=%d body=%v", code, body)
+	}
+	if body["dataset_records"] != float64(1) {
+		t.Fatalf("%v", body)
+	}
+	if body["reconciliation_rate"] != 1.0 {
+		t.Fatalf("rate=%v", body["reconciliation_rate"])
 	}
 }

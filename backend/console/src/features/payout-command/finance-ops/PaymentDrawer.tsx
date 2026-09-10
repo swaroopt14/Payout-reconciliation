@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   createFinanceInvestigation,
   getFinancePayment,
+  getFinancePayout,
   getFinanceRefunds,
   getFinanceSettlements,
 } from '@/services/payout-command/prod-api/financeApi'
@@ -11,12 +12,14 @@ import type {
   FinanceException,
   FinanceInvestigation,
   FinancePayment,
+  FinancePayout,
   FinanceRefund,
   FinanceSettlementLine,
 } from '@/services/payout-command/prod-api/financeTypes'
 import { formatPaise, reconLabel, reasonTitle } from './reasonCopy'
 import { ErrorInvestigationPanel } from './ErrorInvestigationPanel'
 import { buildRazorpayXError } from './razorpayXErrors'
+import { FinanceTimelineLadder, useFinanceTimeline } from './FinanceTimelineLadder'
 import {
   CopyIdButton,
   DrawerCloseButton,
@@ -44,7 +47,7 @@ function asPayoutStatus(status?: string | null): RazorpayPayoutStatus {
   }
   if (s === 'captured' || s === 'settled') return 'processed'
   if (s === 'authorized' || s === 'created') return 'pending'
-  return 'failed'
+  return 'processing'
 }
 
 function formatWhen(value?: string | null): string {
@@ -81,6 +84,7 @@ export function PaymentDrawer({
   onClose: () => void
 }) {
   const [payment, setPayment] = useState<FinancePayment | null>(null)
+  const [payout, setPayout] = useState<FinancePayout | null>(null)
   const [refunds, setRefunds] = useState<FinanceRefund[]>([])
   const [settlements, setSettlements] = useState<FinanceSettlementLine[]>([])
   const [investigation, setInvestigation] = useState<FinanceInvestigation | null>(null)
@@ -88,6 +92,9 @@ export function PaymentDrawer({
   const [error, setError] = useState<string | null>(null)
   const [investigating, setInvestigating] = useState(false)
   const [tab, setTab] = useState<'details' | 'timeline'>('details')
+  const timelineKind =
+    exception?.entity_type === 'payout' || entityId.startsWith('pout_') ? 'payouts' : 'payments'
+  const { timeline, loading: timelineLoading } = useFinanceTimeline(timelineKind, entityId)
 
   useEffect(() => {
     let cancelled = false
@@ -95,29 +102,43 @@ export function PaymentDrawer({
     setError(null)
     setInvestigation(null)
     setPayment(null)
+    setPayout(null)
 
     async function load() {
-      const pay = await getFinancePayment(entityId)
+      const preferPayout = exception?.entity_type === 'payout' || entityId.startsWith('pout_')
+      const first = preferPayout ? await getFinancePayout(entityId) : await getFinancePayment(entityId)
       if (cancelled) return
-      if (!pay.ok || !pay.data) {
-        if (pay.status === 404) {
-          setPayment(null)
-          setError(null)
+      if (first.ok && first.data) {
+        if (preferPayout) setPayout(first.data as FinancePayout)
+        else setPayment(first.data as FinancePayment)
+      } else if (first.status === 404) {
+        const second = preferPayout ? await getFinancePayment(entityId) : await getFinancePayout(entityId)
+        if (cancelled) return
+        if (second.ok && second.data) {
+          if (preferPayout) setPayment(second.data as FinancePayment)
+          else setPayout(second.data as FinancePayout)
+        } else {
+          setError(
+            first.status === 401 || second.status === 401
+              ? 'Sign in to load this payout.'
+              : 'Could not load this payout.',
+          )
           setLoading(false)
           return
         }
-        setError('Could not load this payout.')
+      } else {
+        setError(first.status === 401 ? 'Sign in to load this payout.' : 'Could not load this payout.')
         setLoading(false)
         return
       }
-      setPayment(pay.data)
+
       const [ref, setl] = await Promise.all([
         getFinanceRefunds(entityId),
         getFinanceSettlements(entityId),
       ])
       if (cancelled) return
-      setRefunds(ref.data?.refunds ?? [])
-      setSettlements(setl.data?.settlements ?? [])
+      setRefunds(ref.ok ? ref.data?.refunds ?? [] : [])
+      setSettlements(setl.ok ? setl.data?.settlements ?? [] : [])
       setLoading(false)
     }
 
@@ -125,7 +146,7 @@ export function PaymentDrawer({
     return () => {
       cancelled = true
     }
-  }, [entityId])
+  }, [entityId, exception?.entity_type])
 
   const runInvestigate = useCallback(async () => {
     setInvestigating(true)
@@ -138,23 +159,25 @@ export function PaymentDrawer({
     if (rec.ok && rec.data) setInvestigation(rec.data)
   }, [entityId, exception?.id, exceptionId])
 
-  const recon = payment?.reconciliation
+  const recon = payout?.reconciliation || payment?.reconciliation
   const amountMinor =
+    payout?.amount_minor ??
     payment?.amount_minor ??
     exception?.expected_amount ??
     exception?.variance_amount ??
     investigation?.financial_impact ??
     0
-  const currency = payment?.currency || 'INR'
-  const status = asPayoutStatus(payment?.provider_status || exception?.provider_status || 'failed')
-  const title = drawerTitle(exception?.entity_type || (payment ? 'payment' : 'payout'))
-  const displayId = payment?.payment_id || entityId
-  const createdAt = payment?.provider_created_at || exception?.created_at
+  const currency = payout?.currency || payment?.currency || 'INR'
+  const rawStatus = payout?.provider_status || payment?.provider_status || exception?.provider_status || ''
+  const status = asPayoutStatus(rawStatus)
+  const title = drawerTitle(exception?.entity_type || (payout ? 'payout' : payment ? 'payment' : 'payout'))
+  const displayId = payout?.payout_id || payment?.payment_id || entityId
+  const createdAt = payout?.provider_created_at || payment?.provider_created_at || exception?.created_at
   const settlementLine = settlements[0]
   const errorView = useMemo(
     () =>
       buildRazorpayXError({
-        reason: recon?.reason || exception?.reason || exceptionId || 'server_error',
+        reason: recon?.reason || exception?.reason || exceptionId || '',
         status,
         description:
           investigation?.root_cause ||
@@ -209,7 +232,7 @@ export function PaymentDrawer({
         {tab === 'details' ? (
           <div className="space-y-5">
             <dl>
-              <DrawerField label={payment ? 'Payment ID' : 'Payout ID'} mono>
+              <DrawerField label={payout ? 'Payout ID' : payment ? 'Payment ID' : 'Entity ID'} mono>
                 <span className="inline-flex items-center gap-1">
                   {displayId}
                   <CopyIdButton value={displayId} />
@@ -224,9 +247,9 @@ export function PaymentDrawer({
               <DrawerField label="Amount">{formatPaise(amountMinor, 2)}</DrawerField>
               <DrawerField label="Currency">{currency}</DrawerField>
               <DrawerField label="Status">{status}</DrawerField>
-              <DrawerField label="Mode">{payment?.method || exception?.entity_type || 'NEFT'}</DrawerField>
+              <DrawerField label="Mode">{payout?.mode || payment?.method || exception?.entity_type || '—'}</DrawerField>
               <DrawerField label="UTR" mono>
-                {settlementLine?.utr || '—'}
+                {payout?.utr || settlementLine?.utr || '—'}
               </DrawerField>
               <DrawerField label="Fees">
                 {settlementLine?.fee_minor != null ? formatPaise(settlementLine.fee_minor, 2) : '₹0.00'}
@@ -242,7 +265,7 @@ export function PaymentDrawer({
                 </>
               ) : null}
               <DrawerField label="Processor">
-                <PaymentProviderBadge provider={payment?.provider || 'razorpay'} />
+                <PaymentProviderBadge provider={payment?.provider} />
               </DrawerField>
               {payment ? (
                 <>
@@ -279,17 +302,10 @@ export function PaymentDrawer({
               view="status"
             />
           </div>
+        ) : timelineLoading ? (
+          <p className="text-[13px] text-[#94A3B8]">Loading captured timeline…</p>
         ) : (
-          <ErrorInvestigationPanel
-            errorView={errorView}
-            financialImpactMinor={investigation?.financial_impact ?? exception?.variance_amount ?? amountMinor}
-            confidence={investigation?.confidence ?? recon?.confidence ?? exception?.confidence}
-            investigating={investigating}
-            hasRun={Boolean(investigation)}
-            autoStart={false}
-            compact
-            view="timeline"
-          />
+          <FinanceTimelineLadder timeline={timeline} />
         )}
       </div>
     </aside>

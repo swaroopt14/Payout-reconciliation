@@ -1,47 +1,28 @@
-# Build stage
+# syntax=docker/dockerfile:1.7
 FROM golang:1.25.7-alpine AS builder
 
-# Install build dependencies
-RUN apk add --no-cache git gcc musl-dev
+RUN apk add --no-cache ca-certificates git
 
-WORKDIR /app
-
-# Copy go mod files
+WORKDIR /src
 COPY go.mod go.sum ./
-
-# Copy source code first to allow go mod tidy to see all imports
 RUN go mod download
-
-# Download and tidy dependencies
 COPY . .
 
-# Build the application
-RUN CGO_ENABLED=1 GOOS=linux go build -a -installsuffix cgo -o main ./cmd/main.go
+RUN CGO_ENABLED=0 GOOS=linux \
+    go build -trimpath -ldflags "-s -w" -o /out/main ./cmd/main.go
 
-# Final stage
-FROM alpine:latest
+FROM alpine:3.19
 
-# Install runtime dependencies
-RUN apk --no-cache add ca-certificates postgresql-client wget
+RUN apk add --no-cache ca-certificates wget postgresql-client \
+    && adduser -D -u 65532 nonroot
 
 WORKDIR /app
+COPY --from=builder /out/main /app/main
+COPY --from=builder /src/db/migrations /app/db/migrations
 
-# Copy binary from builder
-COPY --from=builder /app/main /app/main
-COPY --from=builder /app/db/migrations /app/db/migrations
-
-# Create directory for logs if needed
-RUN addgroup -S app && adduser -S app -G app \
-    && mkdir -p /app/logs \
-    && chown -R app:app /app
-
-# Expose port
+ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+USER 65532:65532
 EXPOSE 8081
-
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD wget --quiet --tries=1 --spider http://localhost:8081/v1/health || exit 1
-
-# Run application
-USER app
-CMD ["./main"]
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD wget -qO- http://127.0.0.1:8081/v1/health || exit 1
+ENTRYPOINT ["/app/main"]

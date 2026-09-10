@@ -129,15 +129,14 @@ export function ExceptionsSurface() {
   }, [exceptions, filter, search])
 
   const highCount = exceptions.filter((ex) => exceptionSeverity(ex) === 'HIGH').length
-  const processedCount = kpis.processedCount || summary?.payout_kpis?.processed_count || summary?.matched_count || 70
-  const scored = kpis.scoredCount || summary?.scored_count || 100
+  const processedCount = kpis.processedCount || summary?.payout_kpis?.processed_count || summary?.matched_count || 0
+  const scored = kpis.scoredCount || summary?.scored_count || 0
 
   function openRow(ex: FinanceException) {
     setOpenId(ex.entity_id)
     const params = new URLSearchParams(searchParams.toString())
     params.set('entity_id', ex.entity_id)
     params.set('exception_id', ex.id)
-    if (!params.get('demo')) params.set('demo', 'sandbox')
     router.replace(`/exceptions?${params.toString()}`, { scroll: false })
   }
 
@@ -182,7 +181,7 @@ export function ExceptionsSurface() {
               value={formatPaise(kpis.processedAmount, 2)}
               subtitle={`${processedCount.toLocaleString('en-IN')} processed`}
               info="Status processed · same amount as Reconciliation"
-              onClick={() => router.push('/reconciliation?demo=sandbox')}
+              onClick={() => router.push('/reconciliation')}
             />
             <MiniMetricCard
               label="Needs review"

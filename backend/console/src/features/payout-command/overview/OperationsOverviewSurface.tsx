@@ -36,34 +36,6 @@ function formatWeekday(d: Date) {
   return d.toLocaleDateString('en-IN', { weekday: 'short', month: 'short', day: 'numeric' })
 }
 
-function Sparkline({
-  current,
-  previous,
-}: {
-  current: number[]
-  previous: number[]
-}) {
-  const w = 720
-  const h = 168
-  const pad = 8
-  const max = Math.max(1, ...current, ...previous)
-  const toPath = (series: number[]) =>
-    series
-      .map((v, i) => {
-        const x = pad + (i * (w - pad * 2)) / Math.max(1, series.length - 1)
-        const y = h - pad - (v / max) * (h - pad * 2)
-        return `${i === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${y.toFixed(1)}`
-      })
-      .join(' ')
-
-  return (
-    <svg viewBox={`0 0 ${w} ${h}`} className="h-[168px] w-full" role="img" aria-label="Control trend">
-      <path d={toPath(previous)} fill="none" stroke="#D5D9E0" strokeWidth="2.5" />
-      <path d={toPath(current)} fill="none" stroke="#2B7DE9" strokeWidth="2.8" strokeLinecap="round" />
-    </svg>
-  )
-}
-
 function MetricCell({
   label,
   value,
@@ -125,7 +97,7 @@ export function OperationsOverviewSurface() {
     const payout = sumPayoutKpis((results ?? []).map(mapFinanceRowToPayoutRecon))
     const settledMinor = payout.processedAmount
     const unresolvedMinor = payout.reviewAmount + payout.failedAmount
-    const scored = payout.scoredCount || summary?.scored_count || results.length || 100
+    const scored = payout.scoredCount || summary?.scored_count || results.length || 0
     const matched = payout.processedCount || summary?.matched_count || 0
     const reconPct = scored > 0 ? (matched / scored) * 100 : 0
     const counts = summary?.result_counts ?? {
@@ -154,7 +126,7 @@ export function OperationsOverviewSurface() {
   const healthPct = kpis.scored > 0 ? Math.round((kpis.matched / kpis.scored) * 100) : 0
   const investigated = investigations.length || exceptions.length
   const unresolvedAgents = investigations.filter((i) => String(i.status).toLowerCase().includes('unresolved')).length
-  const resolvedAgents = Math.max(0, investigated - (unresolvedAgents || 2))
+  const resolvedAgents = Math.max(0, investigated - unresolvedAgents)
 
   const greeting = `${greetingForHour(now.getHours())}, Merchant`
   const todaySetl = settlementOverview?.today_settlement
@@ -176,7 +148,7 @@ export function OperationsOverviewSurface() {
       {
         tone: 'info',
         title: `${investigated} exceptions investigated`,
-        body: `${resolvedAgents} resolved · ${unresolvedAgents || 2} still open for the agent.`,
+        body: `${resolvedAgents} resolved · ${unresolvedAgents} still open for the agent.`,
       },
       {
         tone: 'info',
@@ -188,8 +160,6 @@ export function OperationsOverviewSurface() {
   )
 
   const visibleUpdates = updates.slice(updateIndex, updateIndex + 3)
-  const sparkCurrent = [18, 22, 20, 35, 48, 41, 52].map((n) => n * (kpis.settledMinor / 100 || 1))
-  const sparkPrev = [16, 19, 24, 21, 28, 26, 30].map((n) => n * (kpis.settledMinor / 100 || 1))
 
   const attention = [...exceptions]
     .sort((a, b) => (b.variance_amount || 0) - (a.variance_amount || 0))
@@ -237,7 +207,7 @@ export function OperationsOverviewSurface() {
                       ? `${formatPaise(prevSetl.amount || 0, 2)}, previous settlement`
                       : 'No prior settlement'}
                   </span>
-                  <Link href="/settlements?demo=sandbox" className="font-medium text-[#2B7DE9] hover:underline">
+                  <Link href="/settlements" className="font-medium text-[#2B7DE9] hover:underline">
                     View All Settlements →
                   </Link>
                 </div>
@@ -331,14 +301,14 @@ export function OperationsOverviewSurface() {
               info="Open exceptions requiring attention"
             />
           </div>
-          <div className="px-5 pb-2 pt-3">
-            <Sparkline current={sparkCurrent} previous={sparkPrev} />
-            <div className="mt-2 flex flex-wrap items-center justify-between gap-2 pb-4 text-[12px] text-[#8F8F8F]">
-              <span>
-                <span className="mr-3 inline-block h-2 w-2 rounded-full bg-[#2B7DE9]" /> This week
-                <span className="ml-4 mr-3 inline-block h-2 w-2 rounded-full bg-[#D5D9E0]" /> Last week
-              </span>
-              <Link href="/reconciliation?demo=sandbox" className="font-medium text-[#2B7DE9] hover:underline">
+          <div className="px-5 pb-4 pt-3">
+            <p className="text-[13px] text-[#6B6B6B]">
+              Proven bank {formatPaise(cash?.bank_credited_proven_minor, 2)} · in flight{' '}
+              {formatPaise(cash?.in_flight_minor, 2)} · unresolved {formatPaise(cash?.unresolved_exposure_minor, 2)}
+            </p>
+            <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-[12px] text-[#8F8F8F]">
+              <span>From GET /cash-position — no daily sparkline is stored.</span>
+              <Link href="/reconciliation" className="font-medium text-[#2B7DE9] hover:underline">
                 View collected amount →
               </Link>
             </div>
@@ -397,7 +367,7 @@ export function OperationsOverviewSurface() {
           <section className="rounded-[10px] border border-[#E6E8EB] bg-white">
             <div className="flex items-center justify-between border-b border-[#EEF0F3] px-5 py-4">
               <h2 className="text-[16px] font-semibold text-[#1A1A1A]">Exceptions requiring attention</h2>
-              <Link href="/exceptions?demo=sandbox" className="text-[13px] font-medium text-[#2B7DE9] hover:underline">
+              <Link href="/exceptions" className="text-[13px] font-medium text-[#2B7DE9] hover:underline">
                 View all →
               </Link>
             </div>
@@ -408,7 +378,7 @@ export function OperationsOverviewSurface() {
                 attention.map((ex) => (
                   <li key={ex.id}>
                     <Link
-                      href={`/exceptions?demo=sandbox&entity_id=${encodeURIComponent(ex.entity_id)}&exception_id=${encodeURIComponent(ex.id)}`}
+                      href={`/exceptions?entity_id=${encodeURIComponent(ex.entity_id)}&exception_id=${encodeURIComponent(ex.id)}`}
                       className="flex items-center gap-3 px-5 py-3.5 hover:bg-[#FAFBFC]"
                     >
                       <span

@@ -5,13 +5,23 @@ import { formatPaise } from './reasonCopy'
 import {
   CONNECTED_BANKS,
   HDFC_NEFT_RECOMMENDATION,
-  RECEIVER_BANK_DISTRIBUTION,
   ROUTE_COMPARISON,
   ROUTING_STEPS,
   ROUTING_TOTAL_MS,
   type BulkBatchSummary,
+  type ReceiverBankSlice,
+  type RouteOption,
+  type RouteRecommendation,
   type RoutingPhase,
 } from './bulkRouteDemo'
+import {
+  getProcessors,
+  pct,
+  postRouteDecision,
+  processorLabel,
+  type RoutingDecision,
+  type RoutingProcessor,
+} from '@/services/payout-command/prod-api/routingApi'
 
 function CheckIcon({ className = '' }: { className?: string }) {
   return (
@@ -31,7 +41,7 @@ function Spinner({ className = '' }: { className?: string }) {
   )
 }
 
-function DonutChart({ slices }: { slices: typeof RECEIVER_BANK_DISTRIBUTION }) {
+function DonutChart({ slices }: { slices: ReceiverBankSlice[] }) {
   let acc = 0
   const gradient = slices
     .map((s) => {
@@ -113,7 +123,7 @@ function ThinkingStepper({ elapsedMs }: { elapsedMs: number }) {
       </div>
       <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-[#E4EBF7] pt-3">
         <p className="text-[13px] text-[#334155]">
-          AI is thinking and creating the optimal route for your batch…
+          AI is scoring eligible processors and building a fallback chain…
         </p>
         <p className="text-[12px] font-medium tabular-nums text-[#64748B]">
           Est. time remaining: {String(remaining).padStart(2, '0')}s
@@ -148,6 +158,9 @@ export function AiRouteRecommendationModal({
 }) {
   const [elapsedMs, setElapsedMs] = useState(0)
   const [reveal, setReveal] = useState(false)
+  const [decision, setDecision] = useState<RoutingDecision | null>(null)
+  const [processors, setProcessors] = useState<RoutingProcessor[]>([])
+  const [routeError, setRouteError] = useState<string | null>(null)
   const thinking = phase === 'analyzing'
   const ready = phase === 'ready' || phase === 'approved'
 
@@ -155,24 +168,55 @@ export function AiRouteRecommendationModal({
     if (!open || !thinking) return
     setElapsedMs(0)
     setReveal(false)
+    setDecision(null)
+    setProcessors([])
+    setRouteError(null)
     const started = performance.now()
     let raf = 0
     let finished = false
+    let liveDone = false
+
+    const finish = () => {
+      if (finished) return
+      finished = true
+      onAnalyzeComplete()
+    }
+
+    void Promise.all([
+      postRouteDecision({
+        payment_id: summary.batchId || summary.fileName,
+        amount_minor: summary.totalAmountMinor,
+        currency: 'INR',
+        payment_method: 'IMPS',
+        direction: 'OUTBOUND',
+        country: 'IN',
+      }),
+      getProcessors(),
+    ]).then(([routeRes, processorRes]) => {
+      liveDone = true
+      if (routeRes.ok && routeRes.data) setDecision(routeRes.data)
+      else setRouteError(routeRes.errorText || `router HTTP ${routeRes.status}`)
+      if (processorRes.ok) setProcessors(processorRes.processors)
+    })
+
     const tick = () => {
       const next = Math.min(ROUTING_TOTAL_MS, performance.now() - started)
       setElapsedMs(next)
+      const waited = performance.now() - started
+      if (liveDone && waited >= 1200) {
+        setElapsedMs(ROUTING_TOTAL_MS)
+        finish()
+        return
+      }
       if (next >= ROUTING_TOTAL_MS) {
-        if (!finished) {
-          finished = true
-          onAnalyzeComplete()
-        }
+        finish()
         return
       }
       raf = window.requestAnimationFrame(tick)
     }
     raf = window.requestAnimationFrame(tick)
     return () => window.cancelAnimationFrame(raf)
-  }, [open, thinking, onAnalyzeComplete])
+  }, [open, thinking, onAnalyzeComplete, summary.batchId, summary.fileName, summary.totalAmountMinor])
 
   useEffect(() => {
     if (!ready) {
@@ -184,7 +228,61 @@ export function AiRouteRecommendationModal({
     return () => window.clearTimeout(t)
   }, [ready])
 
-  const rec = HDFC_NEFT_RECOMMENDATION
+  const rec: RouteRecommendation = useMemo(() => {
+    if (!decision) return HDFC_NEFT_RECOMMENDATION
+    const rail = (decision.rail || 'NEFT') as RouteRecommendation['rail']
+    const bank = processorLabel(decision.selected_processor || decision.psp)
+    const fallback = decision.fallback_processors?.[0]
+      ? `${processorLabel(decision.fallback_processors[0])} · ${rail} if primary declines`
+      : HDFC_NEFT_RECOMMENDATION.fallback
+    return {
+      ...HDFC_NEFT_RECOMMENDATION,
+      bank,
+      rail,
+      confidence: pct(decision.score),
+      successProbability: pct(decision.reason?.authorization_rate ?? decision.score),
+      why: [
+        `Selected by ${decision.routing_strategy} scoring (auth × 0.45 + health × 0.25 + cost × 0.15 + latency × 0.10 + priority × 0.05)`,
+        `Authorization rate ${pct(decision.reason.authorization_rate)}% · health ${pct(decision.reason.health_score)}%`,
+        `Connector ${decision.connector_id}`,
+        decision.rules_applied?.length
+          ? `Rules applied: ${decision.rules_applied.join(', ')}`
+          : 'No merchant override rules matched',
+        `Metrics source: ${decision.metrics_source}`,
+        fallback,
+      ],
+      fallback,
+      confidenceLabel: decision.metrics_source === 'static_config' ? 'Config-scored' : 'Live-scored',
+    }
+  }, [decision])
+
+  const connectedBanks = useMemo(() => {
+    if (!processors.length) return CONNECTED_BANKS
+    return processors
+      .filter((p) => p.enabled)
+      .map((p) => ({
+        name: p.name || processorLabel(p.psp),
+        short: processorLabel(p.psp),
+        health: p.health_score >= 0.9 ? ('Healthy' as const) : ('Degraded' as const),
+        score: pct(p.health_score),
+      }))
+  }, [processors])
+
+  const comparison: RouteOption[] = useMemo(() => {
+    if (!decision?.candidates?.length) return ROUTE_COMPARISON
+    return decision.candidates.map((c, i) => ({
+      bank: processorLabel(c.psp),
+      rail: (decision.rail || 'NEFT') as RouteOption['rail'],
+      successRate: pct(c.breakdown.authorization_rate),
+      eta: decision.rail === 'IMPS' || decision.rail === 'UPI' ? 'T+0' : 'T+1',
+      etaNote: decision.rail === 'IMPS' || decision.rail === 'UPI' ? 'Near real-time' : 'Banking hours',
+      completionDate: HDFC_NEFT_RECOMMENDATION.completionDate,
+      completionTime: HDFC_NEFT_RECOMMENDATION.completionTime,
+      costMinor: Math.round((1 - c.breakdown.cost_score) * 200_000),
+      confidence: pct(c.score),
+      recommended: i === 0,
+    }))
+  }, [decision])
 
   const title = useMemo(() => {
     if (thinking) return 'AI Route Recommendation'
@@ -225,8 +323,10 @@ export function AiRouteRecommendationModal({
             </div>
             <p className="mt-1 text-[13px] text-[#64748B]">
               {thinking
-                ? 'AI is analyzing your payout batch to recommend the optimal bank and rail.'
-                : 'Review connected banks, receiver mix, success rate, and confidence before you approve dispatch.'}
+                ? 'Routing engine is scoring eligible PSPs and rails for this batch.'
+                : routeError
+                  ? `Router did not answer (${routeError.slice(0, 80)}). Showing last demo layout — do not treat it as a live decision.`
+                  : `Live decision ${rec.bank} · ${rec.rail}. Approval still required before dispatch.`}
             </p>
           </div>
           <button
@@ -281,10 +381,10 @@ export function AiRouteRecommendationModal({
 
                 <section className="rounded-[10px] border border-[#E6E8EB] bg-white p-4">
                   <p className="text-[12px] font-semibold uppercase tracking-[0.06em] text-[#8F8F8F]">
-                    Connected Banks ({CONNECTED_BANKS.length})
+                    {processors.length ? `Eligible processors (${connectedBanks.length})` : `Connected Banks (${connectedBanks.length})`}
                   </p>
                   <ul className="mt-3 space-y-2.5">
-                    {CONNECTED_BANKS.map((b) => (
+                    {connectedBanks.map((b) => (
                       <li
                         key={b.short}
                         className="flex items-center justify-between gap-2 rounded-[8px] border border-[#F1F5F9] bg-[#FAFBFC] px-3 py-2"
@@ -309,10 +409,18 @@ export function AiRouteRecommendationModal({
                     Receivers Bank Distribution
                   </p>
                   <p className="mt-1 text-[12px] text-[#94A3B8]">
-                    Where beneficiary accounts sit for this batch
+                    {(summary.receiverIfscCount ?? 0) > 0
+                      ? `From ${summary.receiverIfscCount.toLocaleString('en-IN')} beneficiary IFSC${summary.receiverIfscCount === 1 ? '' : 's'} in ${summary.fileName}`
+                      : 'No beneficiary IFSC column found in this file'}
                   </p>
                   <div className="mt-3">
-                    <DonutChart slices={RECEIVER_BANK_DISTRIBUTION} />
+                    {summary.receiverBanks?.length ? (
+                      <DonutChart slices={summary.receiverBanks} />
+                    ) : (
+                      <p className="rounded-[8px] border border-dashed border-[#E2E8F0] bg-[#FAFBFC] px-3 py-6 text-center text-[12px] text-[#94A3B8]">
+                        Upload a payout CSV with IFSC (for example <span className="font-medium">beneficiary.instrument.ifsc</span>) to see this mix.
+                      </p>
+                    )}
                   </div>
                 </section>
               </div>
@@ -381,7 +489,7 @@ export function AiRouteRecommendationModal({
                 <div className="border-b border-[#EEF0F3] px-4 py-3">
                   <p className="text-[13px] font-semibold text-[#1A1A1A]">Route Comparison</p>
                   <p className="mt-0.5 text-[12px] text-[#94A3B8]">
-                    AI ranked alternatives by success rate, cost, and confidence for this receiver mix.
+                    AI ranked processors by eligibility, rules, then weighted score.
                   </p>
                 </div>
                 <div className="overflow-x-auto">
@@ -397,7 +505,7 @@ export function AiRouteRecommendationModal({
                       </tr>
                     </thead>
                     <tbody>
-                      {ROUTE_COMPARISON.map((row) => (
+                      {comparison.map((row) => (
                         <tr
                           key={`${row.bank}-${row.rail}`}
                           className={`border-t border-[#F1F5F9] ${row.recommended ? 'bg-[#F8FBFF]' : ''}`}

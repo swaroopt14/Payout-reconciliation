@@ -3,11 +3,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import {
-  getFinanceInvestigations,
+  getFinanceInvestigation,
   getFinancePayment,
-  getFinanceResults,
+  getFinancePayout,
 } from '@/services/payout-command/prod-api/financeApi'
-import type { FinanceInvestigation, FinancePayment } from '@/services/payout-command/prod-api/financeTypes'
+import type { FinanceInvestigation, FinancePayment, FinancePayout } from '@/services/payout-command/prod-api/financeTypes'
 import {
   RZ_CARD,
   RZ_MUTED,
@@ -18,9 +18,14 @@ import {
 import { formatPaise, reasonTitle } from './reasonCopy'
 import { buildRazorpayXError, INVESTIGATION_STEPS, INVESTIGATION_TOTAL_MS } from './razorpayXErrors'
 import { ErrorInvestigationPanel } from './ErrorInvestigationPanel'
-import { mapFinanceRowToPayoutRecon } from './payoutReconCopy'
+import {
+  mapFinanceRowToPayoutRecon,
+  mapPaymentResponseToReconRow,
+  mapPayoutResponseToReconRow,
+} from './payoutReconCopy'
 import { buildPayoutLifecycle } from './payoutLifecycleModel'
 import { PayoutLifecycleView } from './PayoutLifecycleView'
+import { useFinanceTimeline } from './FinanceTimelineLadder'
 
 type AgentPhase = 'booting' | 'running' | 'ready'
 
@@ -46,28 +51,6 @@ function verdictMark(verdict: string) {
   if (v === 'CONTRADICTED') return '✓'
   if (v === 'POSSIBLE') return '?'
   return '·'
-}
-
-function defaultHypotheses(reason: string): Array<{ claim: string; verdict: string }> {
-  if (reason === 'failed_with_bank_movement' || reason === 'payout_failed_with_bank_movement') {
-    return [
-      { claim: 'Payment settled successfully', verdict: 'CONTRADICTED' },
-      { claim: 'Payment refunded to merchant', verdict: 'CONTRADICTED' },
-      { claim: 'Bank transaction unrelated to this payout', verdict: 'POSSIBLE' },
-      { claim: 'Unexplained financial movement after provider failed', verdict: 'SUPPORTED' },
-    ]
-  }
-  if (reason.includes('variance') || reason.includes('mismatch') || reason.includes('amount')) {
-    return [
-      { claim: 'Force MATCHED on UTR alone', verdict: 'CONTRADICTED' },
-      { claim: 'Fee/tax/adjustment explains bank delta', verdict: 'POSSIBLE' },
-      { claim: 'Settlement net ≠ bank credit — variance stands', verdict: 'SUPPORTED' },
-    ]
-  }
-  return [
-    { claim: 'Rename Razorpay provider status', verdict: 'CONTRADICTED' },
-    { claim: 'Needs finance review with bank + settlement evidence', verdict: 'SUPPORTED' },
-  ]
 }
 
 function Spinner({ className = '' }: { className?: string }) {
@@ -107,27 +90,38 @@ export function InvestigationDetailSurface({ investigationId }: { investigationI
   const load = useCallback(async () => {
     setLoading(true)
     setError(null)
-    const [list, results] = await Promise.all([getFinanceInvestigations(), getFinanceResults('ALL')])
-    if (!list.ok || !list.data) {
-      setError('Could not load investigation.')
+    const rec = await getFinanceInvestigation(investigationId)
+    if (!rec.ok || !rec.data?.data) {
+      setError(rec.status === 401 ? 'Sign in to load investigation.' : 'Could not load investigation.')
       setLoading(false)
       return
     }
-    const hit =
-      (list.data.investigations ?? []).find((r) => r.id === investigationId) ||
-      (list.data.investigations ?? []).find((r) => r.entity_id === investigationId) ||
-      (list.data.investigations ?? [])[0] ||
-      null
+    const hit = rec.data.data
     setRow(hit)
-    if (hit?.entity_id) {
-      const pay = await getFinancePayment(hit.entity_id)
-      if (pay.ok) setPayment(pay.data ?? null)
-      const mapped = (results.data?.results ?? []).map(mapFinanceRowToPayoutRecon)
-      setReconRow(
-        mapped.find((r) => r.payoutId === hit.entity_id) ||
-          mapped.find((r) => r.payoutId.includes('fail')) ||
-          null,
-      )
+    if (hit.entity_id) {
+      const preferPayout = hit.entity_type === 'payout' || hit.entity_id.startsWith('pout_')
+      const first = preferPayout ? await getFinancePayout(hit.entity_id) : await getFinancePayment(hit.entity_id)
+      if (first.ok && first.data) {
+        if (preferPayout) {
+          const payout = first.data as FinancePayout
+          setPayment(null)
+          setReconRow(mapFinanceRowToPayoutRecon(mapPayoutResponseToReconRow(payout)))
+        } else {
+          const pay = first.data as FinancePayment
+          setPayment(pay)
+          setReconRow(mapFinanceRowToPayoutRecon(mapPaymentResponseToReconRow(pay)))
+        }
+      } else if (first.status === 404) {
+        const second = preferPayout ? await getFinancePayment(hit.entity_id) : await getFinancePayout(hit.entity_id)
+        if (second.ok && second.data) {
+          if ('payout_id' in second.data) {
+            setReconRow(mapFinanceRowToPayoutRecon(mapPayoutResponseToReconRow(second.data)))
+          } else {
+            setPayment(second.data)
+            setReconRow(mapFinanceRowToPayoutRecon(mapPaymentResponseToReconRow(second.data)))
+          }
+        }
+      }
     }
     setLoading(false)
     setPhase('running')
@@ -169,34 +163,31 @@ export function InvestigationDetailSurface({ investigationId }: { investigationI
   const amount = payment?.amount_minor ?? row?.financial_impact ?? 0
   const movement = payment?.financial_movement
   const recon = payment?.reconciliation
-  const provider = (payment?.provider_status || reconRow?.status || 'failed').toLowerCase()
+  const provider = (payment?.provider_status || reconRow?.status || '').toLowerCase()
   const hasBank = Boolean(movement?.bank) || Boolean(recon?.bank_credit_proven) || reconRow?.bank === true
   const hasSettlement = (movement?.settlement != null && movement.settlement > 0) || reconRow?.settlement === true
   const hasRefund = movement?.refund != null && movement.refund > 0
-  const hypotheses = row?.hypotheses?.length
-    ? row.hypotheses
-    : defaultHypotheses(recon?.reason || reconRow?.reason || '')
+  const hypotheses = row?.hypotheses ?? []
 
   const errorView = useMemo(
     () =>
       buildRazorpayXError({
-        reason: reconRow?.errorCode || recon?.reason || row?.root_cause || 'server_error',
+        reason: reconRow?.errorCode || recon?.reason || row?.root_cause || '',
         status: provider,
-        description:
-          reconRow?.errorDescription ||
-          row?.root_cause ||
-          'A unique UTR matched a bank row whose amount differs from the settlement net.',
-        source: reconRow?.signalSource || 'internal',
-        nextSteps:
-          row?.recommendation ||
-          reconRow?.nextSteps ||
-          'Do not force a match. Review fee/tax/adjustment and the bank amount.',
+        description: reconRow?.errorDescription || row?.root_cause || '',
+        source: reconRow?.signalSource || '',
+        nextSteps: row?.recommendation || reconRow?.nextSteps || '',
         payoutId: row?.entity_id,
       }),
     [reconRow, recon, row, provider],
   )
 
   const life = useMemo(() => (reconRow ? buildPayoutLifecycle(reconRow) : null), [reconRow])
+  const entityId = row?.entity_id || reconRow?.payoutId
+  const { timeline, loading: timelineLoading } = useFinanceTimeline(
+    entityId?.startsWith('pay_') ? 'payments' : 'payouts',
+    entityId,
+  )
 
   const toolCalls: AgentToolCall[] = useMemo(() => {
     const entity = row?.entity_id || 'payout'
@@ -294,7 +285,7 @@ export function InvestigationDetailSurface({ investigationId }: { investigationI
   return (
     <div className={RZ_PAGE}>
       <div className={`${RZ_WRAP} max-w-[980px]`}>
-        <Link href="/investigations?demo=sandbox" className="text-[13px] font-medium text-[#528FF0] hover:underline">
+        <Link href="/investigations" className="text-[13px] font-medium text-[#528FF0] hover:underline">
           ← Investigations
         </Link>
 
@@ -536,13 +527,13 @@ export function InvestigationDetailSurface({ investigationId }: { investigationI
               </p>
               <div className="mt-4 flex flex-wrap gap-2">
                 <Link
-                  href={`/reconciliation/${encodeURIComponent(row.entity_id)}?demo=sandbox`}
+                  href={`/reconciliation/${encodeURIComponent(row.entity_id)}`}
                   className="rounded-[6px] border border-[#E6E8EB] bg-white px-3 py-1.5 text-[12px] font-semibold text-[#2F6FED] hover:bg-[#F8FAFC]"
                 >
                   Open full trace →
                 </Link>
                 <Link
-                  href="/exceptions?demo=sandbox"
+                  href="/exceptions"
                   className="rounded-[6px] border border-[#E6E8EB] bg-white px-3 py-1.5 text-[12px] font-semibold text-[#1A1A1A] hover:bg-[#F8FAFC]"
                 >
                   Exceptions inbox
@@ -559,7 +550,13 @@ export function InvestigationDetailSurface({ investigationId }: { investigationI
                   Same stop-at-failure rules as Payouts / Reconciliation drawers.
                 </p>
                 <div className="mt-4">
-                  <PayoutLifecycleView life={life} variant="drawer" initialTab="events" />
+                  <PayoutLifecycleView
+                    life={life}
+                    variant="drawer"
+                    initialTab="events"
+                    capturedTimeline={timeline}
+                    timelineLoading={timelineLoading}
+                  />
                 </div>
               </section>
             ) : null}

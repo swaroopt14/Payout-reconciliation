@@ -1,0 +1,14 @@
+.git
+.gitignore
+.vscode
+.idea
+**/.DS_Store
+**/.env
+**/.env.*
+**/*.pem
+**/*.key
+**/*.log
+**/coverage
+**/tmp
+**/testdata
+docker-compose*.yml

@@ -2,11 +2,11 @@ import type { FinanceReconRow } from '@/services/payout-command/prod-api/finance
 
 /** ~20s AI thinking timeline (cumulative seconds) — matches product mock. */
 export const ROUTING_STEPS = [
-  { id: 'validate', label: 'File validated', atSec: 2 },
-  { id: 'analyze', label: 'Analyzing data', atSec: 6 },
-  { id: 'rails', label: 'Evaluating rails', atSec: 10 },
-  { id: 'score', label: 'Scoring routes', atSec: 15 },
-  { id: 'finalize', label: 'Finalizing recommendation', atSec: 20 },
+  { id: 'eligibility', label: 'Eligibility', atSec: 2 },
+  { id: 'rules', label: 'Business rules', atSec: 6 },
+  { id: 'score', label: 'Weighted scoring', atSec: 10 },
+  { id: 'fallback', label: 'Fallback chain', atSec: 15 },
+  { id: 'finalize', label: 'Decision', atSec: 20 },
 ] as const
 
 export const ROUTING_TOTAL_MS = 20_000
@@ -65,13 +65,73 @@ export const CONNECTED_BANKS: ConnectedBank[] = [
   { name: 'Kotak Mahindra', short: 'Kotak', health: 'Healthy', score: 92 },
 ]
 
-export const RECEIVER_BANK_DISTRIBUTION: ReceiverBankSlice[] = [
-  { name: 'HDFC Bank', pct: 48, color: '#2F6FED' },
-  { name: 'ICICI Bank', pct: 22, color: '#22C55E' },
-  { name: 'Axis Bank', pct: 15, color: '#F59E0B' },
-  { name: 'SBI', pct: 9, color: '#8B5CF6' },
-  { name: 'Others', pct: 6, color: '#94A3B8' },
-]
+const BANK_COLORS = ['#2F6FED', '#22C55E', '#F59E0B', '#8B5CF6', '#06B6D4', '#F97316', '#94A3B8'] as const
+
+const IFSC_BANK_NAMES: Record<string, string> = {
+  HDFC: 'HDFC Bank',
+  ICIC: 'ICICI Bank',
+  SBIN: 'State Bank of India',
+  UTIB: 'Axis Bank',
+  KKBK: 'Kotak Mahindra',
+  YESB: 'Yes Bank',
+  PUNB: 'Punjab National Bank',
+  BARB: 'Bank of Baroda',
+  CNRB: 'Canara Bank',
+  IDIB: 'Indian Bank',
+  IOBA: 'Indian Overseas Bank',
+  UBIN: 'Union Bank of India',
+  BKID: 'Bank of India',
+  MAHB: 'Bank of Maharashtra',
+  CBIN: 'Central Bank of India',
+  INDB: 'IndusInd Bank',
+  IDFB: 'IDFC First Bank',
+  RATN: 'RBL Bank',
+  FDRL: 'Federal Bank',
+  KARB: 'Karnataka Bank',
+  KVBL: 'Karur Vysya Bank',
+  SIBL: 'South Indian Bank',
+  TMBL: 'Tamilnad Mercantile Bank',
+  CIUB: 'City Union Bank',
+  DBSS: 'DBS Bank',
+  HSBC: 'HSBC',
+  CITI: 'Citi Bank',
+  SCBL: 'Standard Chartered',
+  AIRP: 'Airtel Payments Bank',
+  PYTM: 'Paytm Payments Bank',
+  IPOS: 'India Post Payments Bank',
+}
+
+export function bankNameFromIfsc(ifsc: string): string | null {
+  const code = ifsc.replace(/[^A-Za-z0-9]/g, '').toUpperCase().slice(0, 4)
+  if (code.length < 4) return null
+  return IFSC_BANK_NAMES[code] || `${code} Bank`
+}
+
+/** Percent mix of beneficiary banks from payout CSV IFSCs. */
+export function receiverBanksFromIfscs(ifscs: Array<string | undefined | null>): ReceiverBankSlice[] {
+  const counts = new Map<string, number>()
+  let total = 0
+  for (const raw of ifscs) {
+    const name = raw ? bankNameFromIfsc(raw) : null
+    if (!name) continue
+    counts.set(name, (counts.get(name) || 0) + 1)
+    total += 1
+  }
+  if (total === 0) return []
+  const ranked = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+  const top = ranked.slice(0, 5)
+  const restCount = ranked.slice(5).reduce((sum, [, n]) => sum + n, 0)
+  const groups = restCount > 0 ? [...top, ['Others', restCount] as [string, number]] : top
+  const rawPct = groups.map(([, n]) => (n / total) * 100)
+  const rounded = rawPct.map((p) => Math.round(p))
+  const drift = 100 - rounded.reduce((s, n) => s + n, 0)
+  if (rounded.length) rounded[0] += drift
+  return groups.map(([name], i) => ({
+    name,
+    pct: Math.max(0, rounded[i] ?? 0),
+    color: name === 'Others' ? '#94A3B8' : BANK_COLORS[i % BANK_COLORS.length],
+  }))
+}
 
 export const ROUTE_COMPARISON: RouteOption[] = [
   {
@@ -144,23 +204,29 @@ export type BulkBatchSummary = {
   uniqueBeneficiaries: number
   uploadTime: string
   requestedBy: string
+  receiverBanks: ReceiverBankSlice[]
+  receiverIfscCount: number
 }
 
 export function buildBulkBatchSummary(opts: {
   fileName: string
   rows: FinanceReconRow[]
   uploadedAt: string
+  ifscs?: Array<string | undefined | null>
 }): BulkBatchSummary {
   const totalAmountMinor = opts.rows.reduce((s, r) => s + (Number(r.amount_minor) || 0), 0)
   const beneficiaries = new Set(opts.rows.map((r) => r.fund_account_id || r.payment_id)).size
+  const ifscs = opts.ifscs ?? []
   return {
     batchId: 'batch-001',
     fileName: opts.fileName,
     totalRecords: opts.rows.length,
     totalAmountMinor,
-    uniqueBeneficiaries: Math.max(beneficiaries, Math.round(opts.rows.length * 0.92)),
+    uniqueBeneficiaries: Math.max(beneficiaries, opts.rows.length),
     uploadTime: opts.uploadedAt,
     requestedBy: 'finance.ops@merchant.in',
+    receiverBanks: receiverBanksFromIfscs(ifscs),
+    receiverIfscCount: ifscs.filter((v) => Boolean(v && bankNameFromIfsc(String(v)))).length,
   }
 }
 

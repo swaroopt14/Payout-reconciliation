@@ -11,20 +11,20 @@ import (
 )
 
 type MemoryFinancialStore struct {
-	mu          sync.Mutex
+	mu             sync.Mutex
 	Payments       []PaymentFact
 	Events         map[string][]ObservationFact
 	Payouts        []PayoutFact
 	PayoutEvents   map[string][]ObservationFact
-	Lines       []SettlementLine
-	Banks       []BankTxn
-	Decisions   []SettlementBankDecision
-	Runs        []ReconciliationRun
-	Results     []FinancialResult
-	Exceptions  []ReconciliationException
+	Lines          []SettlementLine
+	Banks          []BankTxn
+	Decisions      []SettlementBankDecision
+	Runs           []ReconciliationRun
+	Results        []FinancialResult
+	Exceptions     []ReconciliationException
 	Investigations []InvestigationRecord
-	Outbox      []models.OutboxRow
-	Refunds     []RefundFact
+	Outbox         []models.OutboxRow
+	Refunds        []RefundFact
 }
 
 func NewMemoryFinancialStore() *MemoryFinancialStore {
@@ -118,12 +118,30 @@ func (m *MemoryFinancialStore) GetReconciliationRun(_ context.Context, _, runID 
 	return ReconciliationRun{}, errNotFound
 }
 
+func (m *MemoryFinancialStore) GetLatestReconciliationRunByBatch(_ context.Context, _, _, batchID string) (ReconciliationRun, bool, error) {
+	var best ReconciliationRun
+	found := false
+	for _, r := range m.Runs {
+		if r.BatchID != batchID || batchID == "" {
+			continue
+		}
+		if !found || r.CreatedAt.After(best.CreatedAt) {
+			best = r
+			found = true
+		}
+	}
+	return best, found, nil
+}
+
 func (m *MemoryFinancialStore) UpsertReconciliationResult(_ context.Context, _, _, runID string, r FinancialResult) (FinancialResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	r.RunID = runID
 	if r.ID == "" {
 		r.ID = uuid.Must(uuid.NewV7()).String()
+	}
+	if r.CreatedAt.IsZero() {
+		r.CreatedAt = time.Now().UTC()
 	}
 	if r.Exception != nil {
 		r.Exception.RunID = runID
@@ -201,6 +219,10 @@ func (m *MemoryFinancialStore) GetInvestigation(_ context.Context, _, _, id stri
 		}
 	}
 	return InvestigationRecord{}, false, nil
+}
+
+func (m *MemoryFinancialStore) ListInvestigations(context.Context, string, string) ([]InvestigationRecord, error) {
+	return append([]InvestigationRecord{}, m.Investigations...), nil
 }
 
 func (m *MemoryFinancialStore) ListRefunds(_ context.Context, _, _, paymentID string) ([]RefundFact, error) {

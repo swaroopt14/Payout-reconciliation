@@ -9,6 +9,7 @@ import type { PayoutReconDisplayRow } from './payoutReconCopy'
 import { ErrorInvestigationPanel } from './ErrorInvestigationPanel'
 import { buildRazorpayXError } from './razorpayXErrors'
 import { payoutStatusTone, type RazorpayPayoutStatus } from './razorpayPayoutStatus'
+import { useFinanceTimeline } from './FinanceTimelineLadder'
 
 function asStatus(status?: string | null): RazorpayPayoutStatus {
   const s = String(status || '').toLowerCase()
@@ -36,7 +37,11 @@ export function PayoutLifecycleDrawer({
   onClose: () => void
 }) {
   const life = buildPayoutLifecycle(row)
-  const traceHref = `/reconciliation/${encodeURIComponent(row.payoutId)}?demo=sandbox`
+  const traceHref = `/reconciliation/${encodeURIComponent(row.payoutId)}`
+  const { timeline, loading: timelineLoading } = useFinanceTimeline(
+    row.payoutId.startsWith('pay_') ? 'payments' : 'payouts',
+    row.payoutId,
+  )
   const [hasRun, setHasRun] = useState(false)
   const needsInvestigate =
     String(row.status || '').toLowerCase() === 'failed' ||
@@ -74,7 +79,14 @@ export function PayoutLifecycleDrawer({
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
         <div className="mt-1">
-          <PayoutLifecycleView life={life} variant="drawer" initialTab="events" traceHref={traceHref} />
+          <PayoutLifecycleView
+            life={life}
+            variant="drawer"
+            initialTab="events"
+            traceHref={traceHref}
+            capturedTimeline={timeline}
+            timelineLoading={timelineLoading}
+          />
         </div>
         {needsInvestigate ? (
           <ErrorInvestigationPanel
@@ -87,7 +99,6 @@ export function PayoutLifecycleDrawer({
               payoutId: row.payoutId,
             })}
             financialImpactMinor={row.varianceMinor || row.amountMinor}
-            confidence={0.91}
             hasRun={hasRun}
             autoStart
             onInvestigate={onInvestigate}

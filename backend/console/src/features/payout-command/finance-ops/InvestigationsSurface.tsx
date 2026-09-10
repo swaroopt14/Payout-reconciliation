@@ -120,7 +120,7 @@ export function InvestigationsSurface() {
                     <button
                       type="button"
                       onClick={() =>
-                        router.push(`/investigations/${encodeURIComponent(row.id)}?demo=sandbox`)
+                        router.push(`/investigations/${encodeURIComponent(row.id)}`)
                       }
                       className="flex w-full items-start gap-4 px-5 py-4 text-left transition hover:bg-[#FAFBFC]"
                     >

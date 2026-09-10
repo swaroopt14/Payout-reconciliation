@@ -1,18 +1,14 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useState } from 'react'
 import Link from 'next/link'
 import { formatPaise } from './reasonCopy'
 import { StatusBadge } from './razorpayChrome'
 import { payoutStatusTone, type RazorpayPayoutStatus } from './razorpayPayoutStatus'
 import { PaymentProviderBadge } from './PaymentProviderBadge'
-import {
-  reconToneClass,
-  shortHash,
-  type LifecycleEvent,
-  type PayoutLifecycle,
-  type SourceFlag,
-} from './payoutLifecycleModel'
+import { reconToneClass, type PayoutLifecycle } from './payoutLifecycleModel'
+import { FinanceTimelineLadder } from './FinanceTimelineLadder'
+import type { FinanceEntityTimeline } from '@/services/payout-command/prod-api/financeTypes'
 
 export type LifecycleTab =
   | 'overview'
@@ -32,20 +28,6 @@ const TABS: { id: LifecycleTab; label: string }[] = [
   { id: 'ledger', label: 'Ledger' },
   { id: 'evidence', label: 'Evidence' },
 ]
-
-function flagMark(flag: SourceFlag) {
-  if (flag === 'yes') return <span className="font-semibold text-[#147A3F]">✓</span>
-  if (flag === 'no') return <span className="text-[#C0372A]">—</span>
-  return <span className="text-[#CBD5E1]">—</span>
-}
-
-function eventDot(state: LifecycleEvent['state']) {
-  if (state === 'done') return 'bg-[#16A34A]'
-  if (state === 'fail') return 'bg-[#DC2626]'
-  if (state === 'warn') return 'bg-[#D97706]'
-  if (state === 'current') return 'bg-[#528FF0]'
-  return 'bg-[#CBD5E1]'
-}
 
 function asPayoutStatus(status: string): RazorpayPayoutStatus {
   const s = status.toLowerCase()
@@ -70,19 +52,22 @@ export function PayoutLifecycleView({
   variant = 'drawer',
   initialTab = 'events',
   traceHref,
+  capturedTimeline,
+  timelineLoading = false,
+  evidenceRefs = null,
+  providerRecord = null,
 }: {
   life: PayoutLifecycle
   variant?: 'drawer' | 'page'
   initialTab?: LifecycleTab
   traceHref?: string
+  capturedTimeline?: FinanceEntityTimeline | null
+  timelineLoading?: boolean
+  evidenceRefs?: Record<string, unknown> | null
+  providerRecord?: Record<string, unknown> | null
 }) {
   const [tab, setTab] = useState<LifecycleTab>(initialTab)
-  const [openEvent, setOpenEvent] = useState<string | null>(life.events[life.events.length - 1]?.id ?? null)
   const compact = variant === 'drawer'
-
-  const jsonProvider = useMemo(() => JSON.stringify(life.rawProvider, null, 2), [life.rawProvider])
-  const jsonBank = useMemo(() => JSON.stringify(life.rawBank, null, 2), [life.rawBank])
-  const jsonLedger = useMemo(() => JSON.stringify(life.rawLedger, null, 2), [life.rawLedger])
 
   return (
     <div className="space-y-5">
@@ -98,8 +83,7 @@ export function PayoutLifecycleView({
         <PaymentProviderBadge provider={life.providerName} />
         {life.lifecyclePassed ? (
           <span className="text-[12px] font-medium text-[#147A3F]">Lifecycle · Passed ✓</span>
-        ) : life.events.some((e) => e.state === 'fail') ||
-          String(life.providerStatus || '').toLowerCase() === 'failed' ? (
+        ) : String(life.providerStatus || '').toLowerCase() === 'failed' ? (
           <span className="text-[12px] font-medium text-[#C0372A]">Lifecycle · Stopped at failure</span>
         ) : life.exposureMinor > 0 ? (
           <span className="text-[12px] font-medium text-[#B36B00]">
@@ -167,192 +151,84 @@ export function PayoutLifecycleView({
         <div className="space-y-4">
           <dl className="grid grid-cols-2 gap-3">
             <OverviewStat label="Amount" value={formatPaise(life.amountMinor, 2)} />
-            <OverviewStat label="Mode" value={life.mode} />
-            <OverviewStat label="Provider" value={life.providerStatus.toUpperCase()} />
-            <OverviewStat label="Reconciliation" value={life.reconResult} />
+            <OverviewStat label="Mode" value={life.mode || '—'} />
+            <OverviewStat label="Provider" value={life.providerStatus || '—'} />
+            <OverviewStat label="Reconciliation" value={life.reconResult || 'not run'} />
             <OverviewStat label="UTR" value={life.utr || 'null'} mono />
             <OverviewStat
               label="Exposure"
               value={life.exposureMinor ? formatPaise(life.exposureMinor, 2) : '₹0.00'}
             />
           </dl>
-          <div className="rounded-[8px] border border-[#E6E8EB] p-4">
-            <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[#94A3B8]">Route decision</p>
-            <p className="mt-2 text-[14px] font-semibold text-[#0F172A]">{life.route.rail}</p>
-            <p className="mt-1 text-[13px] text-[#475569]">{life.route.reason}</p>
-            <p className="mt-2 text-[12px] text-[#64748B]">
-              SLA {life.route.sla}
-              <span className="mx-1.5 text-[#D0D4DA]">·</span>
-              {life.route.feeFx}
-            </p>
-          </div>
-          <SourceMatrixTable rows={life.sourceMatrix} />
+          {capturedTimeline?.steps.find((s) => s.kind === 'ROUTING_RAIL_SELECTION' && s.captured) ? (
+            <div className="rounded-[8px] border border-[#E6E8EB] p-4">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[#94A3B8]">Route</p>
+              <p className="mt-2 text-[14px] font-semibold text-[#0F172A]">{life.mode || 'captured rail'}</p>
+            </div>
+          ) : (
+            <p className="text-[13px] text-[#94A3B8]">Routing decision was not captured.</p>
+          )}
         </div>
       ) : null}
 
       {tab === 'events' ? (
-        <ol className="space-y-0">
-          {life.events.map((event, i) => {
-            const last = i === life.events.length - 1
-            const open = openEvent === event.id
-            return (
-              <li key={event.id} className="flex gap-3">
-                <div className="flex w-4 flex-col items-center">
-                  <span className={`mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full ${eventDot(event.state)}`} />
-                  {last ? null : (
-                    <span
-                      className={`my-0.5 w-px flex-1 ${
-                        event.state === 'fail' ? 'bg-[#FECACA]' : 'bg-[#E2E8F0]'
-                      }`}
-                    />
-                  )}
-                </div>
-                <div className="min-w-0 flex-1 pb-4">
-                  <button
-                    type="button"
-                    onClick={() => setOpenEvent(open ? null : event.id)}
-                    className="flex w-full items-start justify-between gap-3 text-left"
-                  >
-                    <div>
-                      <p className="font-mono text-[11px] text-[#94A3B8]">{event.timeLabel}</p>
-                      <p className="text-[13px] font-semibold text-[#0F172A]">{event.title}</p>
-                    </div>
-                    <span className="text-[11px] font-medium text-[#528FF0]">{open ? 'Hide' : 'Details'}</span>
-                  </button>
-                  {open ? (
-                    <div
-                      className={`mt-2 rounded-[8px] border bg-white p-3 ${
-                        event.state === 'fail'
-                          ? 'border-[#FECACA] bg-[#FEF2F2]'
-                          : event.state === 'warn'
-                            ? 'border-[#FDE68A] bg-[#FFFBEB]'
-                            : 'border-[#E6E8EB]'
-                      }`}
-                    >
-                      <p className="text-[13px] leading-relaxed text-[#334155]">{event.summary}</p>
-                      {event.state === 'fail' ? (
-                        <p className="mt-2 rounded-[4px] bg-[#FEE2E2] px-2 py-1 text-[11px] font-semibold text-[#B91C1C]">
-                          Terminal failure · no successful evidence seal
-                        </p>
-                      ) : null}
-                      {event.operational ? (
-                        <p className="mt-2 rounded-[4px] bg-[#FFF6E5] px-2 py-1 text-[11px] font-semibold text-[#B36B00]">
-                          {event.operational.label}: {event.operational.value}
-                        </p>
-                      ) : null}
-                      <dl className="mt-2 space-y-1.5">
-                        {event.facts.map((fact) => (
-                          <div key={fact.label} className="grid grid-cols-[108px_1fr] gap-2 text-[12px]">
-                            <dt className="text-[#94A3B8]">{fact.label}</dt>
-                            <dd className="break-all font-medium text-[#0F172A]">{fact.value}</dd>
-                          </div>
-                        ))}
-                      </dl>
-                    </div>
-                  ) : (
-                    <p className="mt-0.5 text-[12px] text-[#64748B]">{event.summary}</p>
-                  )}
-                </div>
-              </li>
-            )
-          })}
-        </ol>
+        timelineLoading ? (
+          <p className="text-[13px] text-[#94A3B8]">Loading captured timeline…</p>
+        ) : (
+          <FinanceTimelineLadder timeline={capturedTimeline ?? null} />
+        )
       ) : null}
 
-      {tab === 'provider' ? <JsonBlock title="Razorpay / provider record" value={jsonProvider} /> : null}
-      {tab === 'bank' ? <JsonBlock title="Bank observation" value={jsonBank} /> : null}
+      {tab === 'provider' ? (
+        providerRecord ? (
+          <JsonBlock title="Razorpay / provider record" value={JSON.stringify(providerRecord, null, 2)} />
+        ) : (
+          <p className="text-[13px] text-[#94A3B8]">Provider record was not captured for this payout.</p>
+        )
+      ) : null}
+      {tab === 'bank' ? (
+        capturedTimeline?.steps.find((s) => s.kind === 'BANK_SIDE_CASH_MOVEMENT' && s.captured) ? (
+          <JsonBlock
+            title="Bank observation"
+            value={JSON.stringify(
+              capturedTimeline.steps.find((s) => s.kind === 'BANK_SIDE_CASH_MOVEMENT'),
+              null,
+              2,
+            )}
+          />
+        ) : (
+          <p className="text-[13px] text-[#94A3B8]">Bank-side cash movement was not captured.</p>
+        )
+      ) : null}
       {tab === 'settlement' ? (
-        <div className="rounded-[8px] border border-[#E6E8EB] p-4 text-[13px] text-[#334155]">
-          <p>
-            Settlement relationship is derived from recon, not invented. Provider status stays{' '}
-            <span className="font-semibold">{life.providerStatus}</span>.
-          </p>
-          <p className="mt-2 font-mono text-[12px] text-[#64748B]">
-            recon={life.reconResult}
-            {life.exceptionType ? ` · exception=${life.exceptionType}` : ''}
-          </p>
-        </div>
+        capturedTimeline?.steps.find((s) => s.kind === 'SETTLEMENT_ACCOUNTING_RECORD' && s.captured) ? (
+          <JsonBlock
+            title="Settlement"
+            value={JSON.stringify(
+              capturedTimeline.steps.find((s) => s.kind === 'SETTLEMENT_ACCOUNTING_RECORD'),
+              null,
+              2,
+            )}
+          />
+        ) : (
+          <p className="text-[13px] text-[#94A3B8]">Settlement accounting record was not captured.</p>
+        )
       ) : null}
       {tab === 'ledger' ? (
-        <div className="space-y-4">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[#94A3B8]">Attempt ledger</p>
-          {life.attempts.map((att) => (
-            <article key={att.id} className="rounded-[8px] border border-[#E6E8EB] p-4">
-              <div className="flex items-center justify-between gap-2">
-                <p className="font-mono text-[12px] font-semibold text-[#0F172A]">{att.id}</p>
-                <span className="text-[11px] font-semibold uppercase tracking-[0.04em] text-[#64748B]">
-                  {att.status}
-                </span>
-              </div>
-              <dl className="mt-3 space-y-1.5 text-[12px]">
-                <div className="grid grid-cols-[108px_1fr] gap-2">
-                  <dt className="text-[#94A3B8]">Sent</dt>
-                  <dd>{att.sentLabel}</dd>
-                </div>
-                <div className="grid grid-cols-[108px_1fr] gap-2">
-                  <dt className="text-[#94A3B8]">Response</dt>
-                  <dd className="font-mono">{att.response}</dd>
-                </div>
-                <div className="grid grid-cols-[108px_1fr] gap-2">
-                  <dt className="text-[#94A3B8]">Provider ref</dt>
-                  <dd className="font-mono">{att.providerRef}</dd>
-                </div>
-              </dl>
-              <ul className="mt-2 space-y-1 text-[12px] text-[#147A3F]">
-                {att.notes.map((n) => (
-                  <li key={n}>✓ {n}</li>
-                ))}
-              </ul>
-            </article>
-          ))}
-          <JsonBlock title="Ledger movement" value={jsonLedger} />
-        </div>
+        capturedTimeline?.reconciliation ? (
+          <JsonBlock title="Reconciliation decision" value={JSON.stringify(capturedTimeline.reconciliation, null, 2)} />
+        ) : (
+          <p className="text-[13px] text-[#94A3B8]">Reconciliation has not been run for this payout.</p>
+        )
       ) : null}
 
       {tab === 'evidence' ? (
-        <div className="space-y-4">
-          <section className="rounded-[8px] border border-[#E6E8EB] p-4">
-            <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[#94A3B8]">
-              Evidence integrity
-            </p>
-            <p className="mt-2 text-[13px] font-semibold text-[#147A3F]">✓ SHA-256 verified</p>
-            <p className="mt-1 break-all font-mono text-[12px] text-[#334155]">sha256:{life.requestHash}</p>
-            <p className="mt-3 text-[13px] font-semibold text-[#147A3F]">✓ Evidence chain verified</p>
-            <dl className="mt-2 space-y-1.5 text-[12px]">
-              <div className="grid grid-cols-[108px_1fr] gap-2">
-                <dt className="text-[#94A3B8]">Merkle root</dt>
-                <dd className="break-all font-mono">{life.merkleRoot}</dd>
-              </div>
-              <div className="grid grid-cols-[108px_1fr] gap-2">
-                <dt className="text-[#94A3B8]">Leaf</dt>
-                <dd className="font-mono">{life.merkleLeaf}</dd>
-              </div>
-              <div className="grid grid-cols-[108px_1fr] gap-2">
-                <dt className="text-[#94A3B8]">Tree status</dt>
-                <dd className="font-semibold text-[#147A3F]">VALID</dd>
-              </div>
-              <div className="grid grid-cols-[108px_1fr] gap-2">
-                <dt className="text-[#94A3B8]">Last sealed</dt>
-                <dd>{life.sealedAt}</dd>
-              </div>
-            </dl>
-            <p className="mt-3 text-[12px] text-[#64748B]">
-              Request hash {shortHash(life.requestHash)} matches the sealed contract. Merkle is shown here, not on
-              every lifecycle card.
-            </p>
-          </section>
-        </div>
+        evidenceRefs && Object.keys(evidenceRefs).length > 0 ? (
+          <JsonBlock title="Evidence refs" value={JSON.stringify(evidenceRefs, null, 2)} />
+        ) : (
+          <p className="text-[13px] text-[#94A3B8]">Evidence refs were not captured.</p>
+        )
       ) : null}
-
-      <section className="rounded-[8px] border border-[#E6E8EB] p-4">
-        <p className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[#94A3B8]">AI investigation</p>
-        <p className="mt-2 text-[13px] font-semibold text-[#0F172A]">{life.investigation.headline}</p>
-        <ul className="mt-2 space-y-1 text-[13px] text-[#475569]">
-          {life.investigation.bullets.map((b) => (
-            <li key={b}>{b}</li>
-          ))}
-        </ul>
-      </section>
     </div>
   )
 }
@@ -364,35 +240,6 @@ function OverviewStat({ label, value, mono }: { label: string; value: string; mo
       <p className={`mt-1 text-[13px] font-semibold text-[#0F172A] ${mono ? 'break-all font-mono' : 'tabular-nums'}`}>
         {value}
       </p>
-    </div>
-  )
-}
-
-function SourceMatrixTable({ rows }: { rows: PayoutLifecycle['sourceMatrix'] }) {
-  return (
-    <div className="overflow-x-auto rounded-[8px] border border-[#E6E8EB]">
-      <table className="w-full min-w-[420px] text-left text-[12px]">
-        <thead className="bg-[#FAFBFC] text-[10px] font-semibold uppercase tracking-[0.06em] text-[#8F8F8F]">
-          <tr>
-            <th className="px-3 py-2">Stage</th>
-            <th className="px-3 py-2">Provider</th>
-            <th className="px-3 py-2">Bank</th>
-            <th className="px-3 py-2">Webhook</th>
-            <th className="px-3 py-2">Ledger</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row) => (
-            <tr key={row.stage} className="border-t border-[#F3F4F6]">
-              <td className="px-3 py-2 font-medium text-[#0F172A]">{row.stage}</td>
-              <td className="px-3 py-2">{flagMark(row.provider)}</td>
-              <td className="px-3 py-2">{flagMark(row.bank)}</td>
-              <td className="px-3 py-2">{flagMark(row.webhook)}</td>
-              <td className="px-3 py-2">{flagMark(row.ledger)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
     </div>
   )
 }

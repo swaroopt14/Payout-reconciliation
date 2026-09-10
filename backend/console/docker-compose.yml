@@ -4,7 +4,7 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        NODE_BASE_IMAGE: ${NODE_BASE_IMAGE:-public.ecr.aws/docker/library/node:18-alpine}
+        NODE_BASE_IMAGE: ${NODE_BASE_IMAGE:-public.ecr.aws/docker/library/node:20-alpine}
     container_name: zord-console
     ports:
       - "3000:3000"
@@ -35,6 +35,7 @@ services:
       - ZORD_EVIDENCE_URL=${ZORD_EVIDENCE_URL:-http://host.docker.internal:8088}
       - ZORD_CONTRACTS_URL=${ZORD_CONTRACTS_URL:-http://host.docker.internal:8084}
       - ZORD_PII_ENCLAVE_URL=${ZORD_PII_ENCLAVE_URL:-http://host.docker.internal:8085}
+      - ZORD_ROUTER_URL=${ZORD_ROUTER_URL:-http://host.docker.internal:8091}
     volumes:
       # Persist support tickets across container restarts (see services/support/supportTicketStore.server.ts).
       - ./.data:/app/.data

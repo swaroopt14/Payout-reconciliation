@@ -146,7 +146,11 @@ export function ReconciliationSurface() {
   async function runAll() {
     setRunning(true)
     setFlash(null)
-    const res = await runFinanceReconciliation()
+    const payoutIds = mappedRows.map((r) => r.payoutId).filter(Boolean)
+    const batchId = searchParams.get('batch')?.trim() || ''
+    const res = await runFinanceReconciliation(
+      payoutIds.length ? { batch_id: batchId || undefined, payout_ids: payoutIds } : undefined,
+    )
     setRunning(false)
     setFlash(res.ok ? 'Reconciliation run completed.' : 'Reconciliation run failed.')
     void load()
@@ -168,7 +172,6 @@ export function ReconciliationSurface() {
     setOpenId(row.payoutId)
     const params = new URLSearchParams(searchParams.toString())
     params.set('payout_id', row.payoutId)
-    if (!params.get('demo')) params.set('demo', 'sandbox')
     router.replace(`/reconciliation?${params.toString()}`, { scroll: false })
   }
 
@@ -245,13 +248,11 @@ export function ReconciliationSurface() {
             <div className="flex items-center gap-2">
               <button
                 type="button"
-                onClick={() =>
-                  router.push(
-                    openRowData
-                      ? `/reconciliation/${encodeURIComponent(openRowData.payoutId)}?demo=sandbox`
-                      : '/reconciliation/pout_proc_004?demo=sandbox',
-                  )
-                }
+                onClick={() => {
+                  if (!openRowData) return
+                  router.push(`/reconciliation/${encodeURIComponent(openRowData.payoutId)}`)
+                }}
+                disabled={!openRowData}
                 className="h-9 rounded-[6px] border border-[#E6E8EB] bg-white px-4 text-[13px] font-semibold text-[#1A1A1A] hover:bg-[#FAFBFC]"
               >
                 Open trace
@@ -411,7 +412,7 @@ export function ReconciliationSurface() {
                               <button
                                 type="button"
                                 onClick={() =>
-                                  router.push(`/reconciliation/${encodeURIComponent(row.payoutId)}?demo=sandbox`)
+                                  router.push(`/reconciliation/${encodeURIComponent(row.payoutId)}`)
                                 }
                                 className="text-[12px] font-medium text-[#528FF0] hover:underline"
                               >

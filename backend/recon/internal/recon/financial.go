@@ -9,12 +9,12 @@ import (
 const FinancialRuleVersion = "financial_recon_v1"
 
 const (
-	ResultMatched     = "MATCHED"
-	ResultAmbiguous   = "AMBIGUOUS"
-	ResultUnresolved  = "UNRESOLVED"
-	ResultConflicted  = "CONFLICTED"
-	ResultVariance    = "VARIANCE"
-	ResultOrphan      = "ORPHAN"
+	ResultMatched    = "MATCHED"
+	ResultAmbiguous  = "AMBIGUOUS"
+	ResultUnresolved = "UNRESOLVED"
+	ResultConflicted = "CONFLICTED"
+	ResultVariance   = "VARIANCE"
+	ResultOrphan     = "ORPHAN"
 )
 
 const (
@@ -46,6 +46,7 @@ type PaymentFact struct {
 	Captured          bool
 	AmountMinor       int64
 	Currency          string
+	Method            string
 	ProviderCreatedAt time.Time
 	FirstObservedAt   time.Time
 	Sources           []string
@@ -54,13 +55,13 @@ type PaymentFact struct {
 }
 
 type ObservationFact struct {
-	Source           string
-	ProviderStatus   string
-	CanonicalStatus  string
-	SourceEventID    string
-	SourceHash       string
-	RawReference     string
-	ObservedAt       time.Time
+	Source          string
+	ProviderStatus  string
+	CanonicalStatus string
+	SourceEventID   string
+	SourceHash      string
+	RawReference    string
+	ObservedAt      time.Time
 }
 
 type RefundFact struct {
@@ -121,10 +122,24 @@ type FinancialResult struct {
 	CandidateIDs     []string
 	EvidenceRefs     EvidenceRefs
 	BankCreditProven bool
+	Direction        string
+	Rail             string
+	TwoWay           ReconLeg
+	ThreeWay         ReconLeg
+	CreatedAt        time.Time
 	Exception        *ReconciliationException
 }
 
 func ReconcilePayment(in FinancialInput) FinancialResult {
+	out := reconcilePayment(in)
+	if out.Rail == "" {
+		out.Rail = NormalizeRail(in.Payment.Method)
+	}
+	AnnotateCashFlow(&out)
+	return out
+}
+
+func reconcilePayment(in FinancialInput) FinancialResult {
 	pay := in.Payment
 	status := strings.ToLower(strings.TrimSpace(pay.CanonicalStatus))
 	if status == "" {
@@ -307,6 +322,12 @@ func reconcileCaptured(out FinancialResult, in FinancialInput, hasPaymentSettlem
 }
 
 func OrphanBankResult(b BankTxn) FinancialResult {
+	out := orphanBankResult(b)
+	AnnotateCashFlow(&out)
+	return out
+}
+
+func orphanBankResult(b BankTxn) FinancialResult {
 	out := FinancialResult{
 		EntityType:     EntityBank,
 		EntityID:       b.ID,

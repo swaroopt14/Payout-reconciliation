@@ -15,3 +15,5 @@
 **/tmp
 **/bin
 **/obj
+**/testdata
+docker-compose*.yml

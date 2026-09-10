@@ -72,9 +72,11 @@ func (h *ReconHandler) GetUpload(c *gin.Context) {
 }
 
 type reconRunBody struct {
-	TenantID    string `json:"tenant_id"`
-	ConnectorID string `json:"connector_id"`
-	AccountID   string `json:"account_id"`
+	TenantID    string   `json:"tenant_id"`
+	ConnectorID string   `json:"connector_id"`
+	AccountID   string   `json:"account_id"`
+	BatchID     string   `json:"batch_id"`
+	PayoutIDs   []string `json:"payout_ids"`
 }
 
 func (h *ReconHandler) Run(c *gin.Context) {

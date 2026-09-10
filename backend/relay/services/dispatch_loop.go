@@ -7,8 +7,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
+
+	"zord-relay/internal/railrouter"
 	"zord-relay/logger"
 	"zord-relay/metrics"
 	"zord-relay/model"
@@ -59,6 +62,7 @@ type DispatchLoop struct {
 	tokenClient  TokenClient
 	hashVerifier PayloadHashVerifier
 	cfg          *DispatchLoopConfig
+	router       RailRouter
 
 	// Circuit breaker — tracks consecutive PSP failures.
 	cbMu       sync.Mutex
@@ -83,6 +87,71 @@ func NewDispatchLoop(
 		tokenClient:  tokenClient,
 		hashVerifier: hashVerifier,
 		cfg:          cfg,
+	}
+}
+
+// RailRouter selects PSP + rail. Relay still executes the payout.
+type RailRouter interface {
+	Route(ctx context.Context, in railrouter.Request) (railrouter.Decision, error)
+}
+
+func (l *DispatchLoop) SetRouter(r RailRouter) {
+	if l != nil {
+		l.router = r
+	}
+}
+
+func processorFromConnector(connectorID string) string {
+	c := strings.ToLower(strings.TrimSpace(connectorID))
+	switch {
+	case strings.HasPrefix(c, "razorpay"):
+		return "razorpay"
+	case strings.HasPrefix(c, "cashfree"):
+		return "cashfree"
+	case strings.HasPrefix(c, "payu"):
+		return "payu"
+	case strings.HasPrefix(c, "stripe"):
+		return "stripe"
+	default:
+		return ""
+	}
+}
+
+func failureClassFromPSP(err error, isFatal, isUncertain bool) string {
+	if isUncertain {
+		return "TIMEOUT"
+	}
+	if isFatal {
+		return "HARD_DECLINE"
+	}
+	var pspErr *psp.PSPError
+	if errors.As(err, &pspErr) && pspErr.HTTPStatusCode >= 500 {
+		return "RAIL_DOWN"
+	}
+	return "UNKNOWN"
+}
+
+func (l *DispatchLoop) reportRouterOutcome(ctx context.Context, routingID, paymentID, processor string, success bool, failureClass, detail string) {
+	if l == nil || strings.TrimSpace(processor) == "" {
+		return
+	}
+	reporter, ok := l.router.(interface {
+		ReportOutcome(context.Context, railrouter.Outcome) error
+	})
+	if !ok {
+		return
+	}
+	outCtx, cancel := context.WithTimeout(ctx, 400*time.Millisecond)
+	defer cancel()
+	if err := reporter.ReportOutcome(outCtx, railrouter.Outcome{
+		RoutingID:     routingID,
+		PaymentID:     paymentID,
+		Processor:     processor,
+		Success:       success,
+		FailureClass:  failureClass,
+		FailureDetail: detail,
+	}); err != nil {
+		logger.Logger.Warn("dispatch_loop: router outcome report failed", zap.Error(err))
 	}
 }
 
@@ -179,6 +248,36 @@ func (l *DispatchLoop) processEvent(ctx context.Context, workerID int, e model.O
 	case "BANK":
 		corridorID = "IMPS"
 	}
+	if l.router != nil {
+		decision, err := l.router.Route(ctx, railrouter.Request{
+			TenantID:    e.TenantID,
+			EntityID:    e.AggregateID,
+			Direction:   "OUTBOUND",
+			Rail:        corridorID,
+			AmountMinor: amountMinorFromMajor(payload.Amount),
+			Currency:    "INR",
+		})
+		if err != nil {
+			log.Warn("dispatch_loop: rail router failed; using configured connector",
+				zap.Error(err),
+				zap.String("connector_id", connectorID),
+				zap.String("corridor_id", corridorID),
+			)
+		} else {
+			if decision.ConnectorID != "" {
+				connectorID = decision.ConnectorID
+			}
+			if decision.Rail != "" {
+				corridorID = decision.Rail
+			}
+			log.Info("dispatch_loop: rail router selected",
+				zap.String("psp", decision.PSP),
+				zap.String("connector_id", connectorID),
+				zap.String("rail", corridorID),
+				zap.String("algorithm", decision.Algorithm),
+			)
+		}
+	}
 
 	intentID := e.AggregateID
 	tenantID := e.TenantID
@@ -228,16 +327,16 @@ func (l *DispatchLoop) processEvent(ctx context.Context, workerID int, e model.O
 		carriersJSON, _ := json.Marshal(carriers)
 
 		newDispatch := &model.Dispatch{
-			DispatchID:             dispatchID,
-			ContractID:             contractID,
-			IntentID:               intentID,
-			TenantID:               tenantID,
-			TraceID:                traceID,
-			ConnectorID:            connectorID,
-			CorridorID:             corridorID,
-			AttemptCount:           1,
-			Status:                 model.DispatchStatusPending,
-			ProviderIdempotencyKey: dispatchID,
+			DispatchID:              dispatchID,
+			ContractID:              contractID,
+			IntentID:                intentID,
+			TenantID:                tenantID,
+			TraceID:                 traceID,
+			ConnectorID:             connectorID,
+			CorridorID:              corridorID,
+			AttemptCount:            1,
+			Status:                  model.DispatchStatusPending,
+			ProviderIdempotencyKey:  dispatchID,
 			CorrelationCarriersJSON: carriersJSON,
 		}
 
@@ -466,6 +565,7 @@ func (l *DispatchLoop) runSteps2to5(ctx context.Context, workerID int, d *model.
 		)
 
 		l.recordPSPFailure()
+		l.reportRouterOutcome(ctx, "rte_"+intentID, intentID, processorFromConnector(connectorID), false, failureClassFromPSP(pspErr, isFatal, isUncertain), pspErr.Error())
 
 		if isUncertain {
 			l.markAwaitingProviderSignal(ctx, dispatchID, contractID, intentID, tenantID, traceID, pspErr.Error(), log)
@@ -481,6 +581,7 @@ func (l *DispatchLoop) runSteps2to5(ctx context.Context, workerID int, d *model.
 	}
 
 	l.recordPSPSuccess()
+	l.reportRouterOutcome(ctx, "rte_"+intentID, intentID, processorFromConnector(connectorID), true, "", "")
 
 	log.Info("dispatch_loop: step4 PSP acked",
 		zap.String("provider_attempt_id", pspResp.PayoutID),
@@ -795,6 +896,18 @@ func amountFromString(amount string) int64 {
 	return int64(f)
 }
 
+func amountMinorFromMajor(amount string) int64 {
+	if amount == "" {
+		return 0
+	}
+	var f float64
+	fmt.Sscanf(amount, "%f", &f)
+	if f < 0 {
+		return 0
+	}
+	return int64(f*100 + 0.5)
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Circuit breaker
 // ─────────────────────────────────────────────────────────────────────────────
@@ -868,7 +981,7 @@ func (l *DispatchLoop) verifyDispatchPayloadHash(
 	)
 
 	if err != nil {
-		log.Error("dispatch_loop: payload_hash verification: verifier error — " +
+		log.Error("dispatch_loop: payload_hash verification: verifier error — "+
 			"SKIPPING PSP dispatch (integrity layer failure, do not publish externally)",
 			zap.Error(err),
 			zap.String("expected_hash", e.CanonicalPayloadHash),
