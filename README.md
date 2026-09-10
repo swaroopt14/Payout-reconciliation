@@ -47,6 +47,80 @@ This project closes one loop on a batch of records:
 
 `MATCHED` means the books are accounted for. It is not `fully_reconciled` and not `bank_credited`. Failed payments with no settlement and no bank movement are `MATCHED` (nothing moved). Unexplained bank CREDIT/DEBIT is `UNRESOLVED` plus an exception.
 
+A payment can succeed at checkout and still fail finance. Authorization, capture, settlement, and bank receipt are separate events. The diagram below is the PSP lifecycle. `succeeded` is not money in the merchant bank account.
+
+<div align="center">
+  <img src="docs/assets/image.png" alt="Payment status lifecycle from authorization and capture to succeeded, failed, or expired" width="920" />
+  <p><em>PSP payment lifecycle. Capture proves the processor took the sale. It does not prove the bank credit arrived.</em></p>
+</div>
+
+---
+
+## Two-way and three-way reconciliation
+
+Reconciliation is not one comparison. Two-way asks whether merchant books agree with the PSP. Three-way asks whether that story also matches cash in the bank. Close / eval still uses the top-level result. The 2-way and 3-way stamps are overlays; they never rename Razorpay status.
+
+| Leg | What it compares | MATCHED means | Still open when |
+|---|---|---|---|
+| **Close** | Oracle for the batch | Books are accounted for (including failed with no movement) | Exception, conflict, or missing evidence |
+| **2-way** | Merchant books ↔ PSP settlement or payout | `merchant_psp_settled` / `merchant_psp_payout` | Capture with no settlement, amount mismatch, identity break |
+| **3-way** | Merchant + PSP + proven bank CREDIT or DEBIT | `merchant_psp_bank` | Settlement without bank, payout without debit, high-confidence bank that is not proven |
+
+High-confidence bank matching is not proof. Only an exact UTR and amount sets `BankCreditProven`. A 2% gap is an exception, not a match.
+
+```mermaid
+flowchart LR
+    subgraph merchant [Merchant truth]
+        Order["Order / payment / payout"]
+    end
+
+    subgraph processor [Processor truth]
+        Capture["Capture / processed"]
+        Settle["Settlement line or payout object"]
+    end
+
+    subgraph cash [Cash truth]
+        Bank["Bank CREDIT or DEBIT"]
+    end
+
+    Order -->|"same id, amount, currency"| Capture
+    Capture --> Settle
+    Settle -->|"2-way MATCHED<br/>merchant_psp_settled"| Two["Two-way"]
+    Settle -->|"UTR + exact net"| Bank
+    Bank -->|"3-way MATCHED<br/>merchant_psp_bank"| Three["Three-way"]
+```
+
+**Locked example:** captured payment with a settlement line and no bank row.
+
+| Stamp | Result | Reason |
+|---|---|---|
+| Close | `UNRESOLVED` | `settlement_without_bank` |
+| 2-way | `MATCHED` | `merchant_psp_settled` |
+| 3-way | `UNRESOLVED` | `settlement_without_bank` |
+
+The PSP agrees with the books. Cash is not proven. Same split for a processed payout with no bank DEBIT (`payout_missing_bank`).
+
+```mermaid
+flowchart TB
+    subgraph twoWay [Two-way — merchant vs PSP]
+        M["Merchant amount"]
+        P["PSP capture + settlement net"]
+        M --- P
+    end
+
+    subgraph threeWay [Three-way — plus bank]
+        S["Settlement / payout batch"]
+        B["Bank statement"]
+        S -->|"exact UTR and amount"| B
+    end
+
+    twoWay -->|"PSP books agree"| OK2["2-way MATCHED"]
+    threeWay -->|"cash proven"| OK3["3-way MATCHED"]
+    threeWay -->|"file late, UTR missing, or high-confidence only"| Gap["3-way UNRESOLVED"]
+```
+
+Matching order: payment or payout id, then PSP object links, then settlement line to UTR, then exact bank amount. Composite keys only inside a bounded window. `AMBIGUOUS` stays a queue. Ambiguous candidates are never force-merged into `MATCHED`.
+
 ---
 
 ## System Architecture
@@ -54,6 +128,7 @@ This project closes one loop on a batch of records:
 Razorpay is a first-class source. Webhooks and the Payments API land as observations. **relay** moves those events between services. **recon** reduces them to canonical payments, matches settlement lines to bank rows, then runs payment-first financial recon. **evidence** hashes the decision. **intel** projects the batch. **agents** read those APIs — they do not re-score UTR or rename Razorpay status.
 
 Folders stay short (`console`, `recon`, `agents`). The table uses the full service name. The Reconciliation Engine is the matching engine. The Event Relay is communication. The Evidence Service is cryptographic proof.
+
 
 ```mermaid
 flowchart TB
@@ -96,7 +171,8 @@ flowchart TB
     Relay --> Canonical
     Canonical --> SettleBank
     SettleBank --> Finance
-    Finance --> Evidence
+    Finance --> TwoThree["2-way merchant↔PSP · 3-way + bank"]
+    TwoThree --> Evidence
     Finance --> Intel
     Finance --> Agents
     Evidence --> Console
@@ -104,15 +180,13 @@ flowchart TB
     Agents --> Console
 ```
 
-
-
 | Service | Folder | Job |
 |---|---|---|
 | **Web Console** | `console` | Operator dashboard for recon, exceptions, Ask, and investigations |
 | **Edge Ingestion Service** | `edge` | Signed Razorpay webhooks, settlement and bank file upload |
 | **Event Relay** | `relay` | Kafka + KRaft event bus between services. Not proof of a match |
 | **Intent Engine** | `intents` | Validate and canonicalize incoming instructions |
-| **Reconciliation Engine** | `recon` | Razorpay client, settlement ↔ bank match, exceptions |
+| **Reconciliation Engine** | `recon` | Razorpay client, settlement ↔ bank match, 2-way / 3-way overlays, exceptions |
 | **Evidence Service** | `evidence` | Cryptographic proof packs (SHA-256, Merkle root, ed25519) |
 | **Intelligence Service** | `intel` | Leakage, ambiguity, defensibility, RCA, SLA |
 | **Machine Learning Service** | `ml` | Anomaly and leakage scores. Never writes a match |
@@ -126,7 +200,7 @@ flowchart TB
 2. **Observe** — immutable `provider.observation.received` events on **relay** (Kafka + KRaft); Razorpay status stored as `provider_status`
 3. **Canonicalize** — one current `canonical_payments` row; status never walks backwards (`captured` is not overwritten by a late `authorized`)
 4. **Match settlement to bank** — candidates only (`EXACT_MATCH` … `ORPHAN_BANK`); this step does not mark cash received
-5. **Reconcile** — `POST /v1/reconciliation/run` on payments and payouts; exceptions stay honest
+5. **Reconcile** — `POST /v1/reconciliation/run` stamps close, 2-way (merchant↔PSP), and 3-way (plus proven bank); exceptions stay honest
 6. **Explain** — Ask copies numbers from APIs; the investigation agent walks exceptions with a tool budget
 
 ---
@@ -155,7 +229,7 @@ Web Console: `/ask` and `/investigations`.
 - Razorpay Test/Live client, signed webhooks, and payments API backfill
 - Canonical payment and payout truth that preserves native Razorpay status names
 - Settlement and bank file ingest with duplicate-file detection
-- Payment-first recon with match rate, exception list, and evaluation on 100+ labeled records
+- Payment-first recon with close, 2-way, and 3-way stamps; match rate, exception list, and evaluation on 100+ labeled records
 - Evidence packs: SHA-256 item hashes, Merkle root, ed25519 signature, replay check
 - Ask and investigation agents over HTTP tools (no second matcher)
 - Multi-tenant isolation, DLQ, and PII tokenization
