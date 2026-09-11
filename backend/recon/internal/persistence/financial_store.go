@@ -305,8 +305,8 @@ func (s *ReconSQLStore) UpsertReconciliationResult(ctx context.Context, tenantID
 		INSERT INTO reconciliation_results (
 			id, run_id, tenant_id, connector_id, entity_type, entity_id, status, result,
 			expected_amount_minor, observed_amount_minor, variance_amount_minor, confidence, reason,
-			candidate_ids, evidence_refs, bank_credit_proven, created_at, updated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,now(),now())
+			candidate_ids, evidence_refs, bank_credit_proven, rule_version, created_at, updated_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,now(),now())
 		ON CONFLICT (tenant_id, connector_id, entity_type, entity_id) DO UPDATE SET
 			run_id=EXCLUDED.run_id, status=EXCLUDED.status, result=EXCLUDED.result,
 			expected_amount_minor=EXCLUDED.expected_amount_minor,
@@ -314,11 +314,11 @@ func (s *ReconSQLStore) UpsertReconciliationResult(ctx context.Context, tenantID
 			variance_amount_minor=EXCLUDED.variance_amount_minor,
 			confidence=EXCLUDED.confidence, reason=EXCLUDED.reason,
 			candidate_ids=EXCLUDED.candidate_ids, evidence_refs=EXCLUDED.evidence_refs,
-			bank_credit_proven=EXCLUDED.bank_credit_proven, updated_at=now()
+			bank_credit_proven=EXCLUDED.bank_credit_proven, rule_version=EXCLUDED.rule_version, updated_at=now()
 		RETURNING id::text`,
 		r.ID, run, tenantID, connectorID, r.EntityType, r.EntityID, r.Status, r.Result,
 		r.ExpectedAmount, r.ObservedAmount, r.VarianceAmount, r.Confidence, r.Reason,
-		cands, refs, r.BankCreditProven,
+		cands, refs, r.BankCreditProven, r.RuleVersion,
 	).Scan(&r.ID)
 	if err != nil {
 		return recon.FinancialResult{}, err
@@ -339,13 +339,13 @@ func (s *ReconSQLStore) GetReconciliationResult(ctx context.Context, tenantID, c
 	err := s.db.QueryRowContext(ctx, `
 		SELECT id::text, COALESCE(run_id::text,''), entity_type, entity_id, status, result,
 			expected_amount_minor, observed_amount_minor, variance_amount_minor, confidence, reason,
-			candidate_ids, evidence_refs, bank_credit_proven, created_at
+			candidate_ids, evidence_refs, bank_credit_proven, COALESCE(rule_version,''), created_at
 		FROM reconciliation_results
 		WHERE tenant_id=$1 AND connector_id=$2 AND entity_type=$3 AND entity_id=$4`,
 		tenantID, connectorID, entityType, entityID,
 	).Scan(&r.ID, &runID, &r.EntityType, &r.EntityID, &r.Status, &r.Result,
 		&r.ExpectedAmount, &r.ObservedAmount, &r.VarianceAmount, &r.Confidence, &r.Reason,
-		&cands, &refs, &r.BankCreditProven, &created)
+		&cands, &refs, &r.BankCreditProven, &r.RuleVersion, &created)
 	if errors.Is(err, sql.ErrNoRows) {
 		return recon.FinancialResult{}, false, nil
 	}
@@ -365,7 +365,7 @@ func (s *ReconSQLStore) ListReconciliationResults(ctx context.Context, tenantID,
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id::text, COALESCE(run_id::text,''), entity_type, entity_id, status, result,
 			expected_amount_minor, observed_amount_minor, variance_amount_minor, confidence, reason,
-			candidate_ids, evidence_refs, bank_credit_proven, created_at
+			candidate_ids, evidence_refs, bank_credit_proven, COALESCE(rule_version,''), created_at
 		FROM reconciliation_results
 		WHERE tenant_id=$1 AND connector_id=$2
 		ORDER BY entity_type, entity_id`, tenantID, connectorID)
@@ -381,7 +381,7 @@ func (s *ReconSQLStore) ListReconciliationResults(ctx context.Context, tenantID,
 		var created sql.NullTime
 		if err := rows.Scan(&r.ID, &runID, &r.EntityType, &r.EntityID, &r.Status, &r.Result,
 			&r.ExpectedAmount, &r.ObservedAmount, &r.VarianceAmount, &r.Confidence, &r.Reason,
-			&cands, &refs, &r.BankCreditProven, &created); err != nil {
+			&cands, &refs, &r.BankCreditProven, &r.RuleVersion, &created); err != nil {
 			return nil, err
 		}
 		r.RunID = runID.String

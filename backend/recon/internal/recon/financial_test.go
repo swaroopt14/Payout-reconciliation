@@ -37,6 +37,9 @@ func TestPAY001_CapturedSettlementExactBank(t *testing.T) {
 	if got.EvidenceRefs.SettlementBankDecisionID != "d1" || got.EvidenceRefs.BankObservationID != "b1" {
 		t.Fatalf("evidence %+v", got.EvidenceRefs)
 	}
+	if got.RuleVersion != FinancialRuleVersion {
+		t.Fatalf("rule_version=%s", got.RuleVersion)
+	}
 }
 
 func TestPAY002_FailedNoMovementMatchedNotBankCredited(t *testing.T) {

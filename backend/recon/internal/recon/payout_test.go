@@ -20,6 +20,9 @@ func TestPAYO001_ProcessedExactDebitMatched(t *testing.T) {
 	if got.Result != ResultMatched {
 		t.Fatalf("result=%s reason=%s", got.Result, got.Reason)
 	}
+	if got.RuleVersion != FinancialRuleVersion {
+		t.Fatalf("rule_version=%s", got.RuleVersion)
+	}
 	if got.Status != razorpay.PayoutProcessed {
 		t.Fatalf("status mutated: %s", got.Status)
 	}
