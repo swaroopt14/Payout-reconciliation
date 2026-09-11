@@ -72,6 +72,13 @@ func reconcilePayout(in PayoutInput) FinancialResult {
 			out.EvidenceRefs.BankCreditMinor = exact.DebitMinor
 			return out
 		}
+		if mismatch := utrAmountMismatch(p, debits); mismatch != nil {
+			out.ObservedAmount = mismatch.DebitMinor
+			out.VarianceAmount = p.AmountMinor - mismatch.DebitMinor
+			out.EvidenceRefs.BankObservationID = mismatch.ID
+			out.EvidenceRefs.BankCreditMinor = mismatch.DebitMinor
+			return withException(out, ResultVariance, "amount_mismatch", 0.9)
+		}
 		if len(debits) > 1 {
 			ids := bankIDs(debits)
 			out.CandidateIDs = ids
@@ -134,10 +141,6 @@ func exactDebit(p PayoutFact, debits []BankTxn) *BankTxn {
 			hit := utrHits[0]
 			return &hit
 		}
-		if len(utrHits) == 1 {
-			hit := utrHits[0]
-			return &hit
-		}
 	}
 	var amt []BankTxn
 	for _, b := range debits {
@@ -147,6 +150,24 @@ func exactDebit(p PayoutFact, debits []BankTxn) *BankTxn {
 	}
 	if len(amt) == 1 {
 		hit := amt[0]
+		return &hit
+	}
+	return nil
+}
+
+func utrAmountMismatch(p PayoutFact, debits []BankTxn) *BankTxn {
+	utr := strings.ToUpper(strings.TrimSpace(p.UTR))
+	if utr == "" {
+		return nil
+	}
+	var hits []BankTxn
+	for _, b := range debits {
+		if strings.ToUpper(strings.TrimSpace(b.UTR)) == utr || strings.ToUpper(strings.TrimSpace(b.UTRRaw)) == utr {
+			hits = append(hits, b)
+		}
+	}
+	if len(hits) == 1 && hits[0].DebitMinor != p.AmountMinor {
+		hit := hits[0]
 		return &hit
 	}
 	return nil
