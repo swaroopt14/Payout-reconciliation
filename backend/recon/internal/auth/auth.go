@@ -54,9 +54,8 @@ func GinProtect() gin.HandlerFunc {
 			abort(c, http.StatusUnauthorized, "UNAUTHENTICATED", "missing or invalid Authorization token")
 			return
 		}
-		if requested := requestedTenant(c.Request); requested != "" &&
-			!strings.EqualFold(strings.TrimSpace(p.tenantID), strings.TrimSpace(requested)) {
-			log.Printf("tenant_mismatch route=%s jwt_tenant=%q requested_tenant=%q", c.Request.URL.Path, p.tenantID, requested)
+		if mismatched := mismatchedRequestedTenant(p.tenantID, requestedTenants(c.Request)); mismatched != "" {
+			log.Printf("tenant_mismatch route=%s jwt_tenant=%q requested_tenant=%q", c.Request.URL.Path, p.tenantID, mismatched)
 			abort(c, http.StatusForbidden, "TENANT_FORBIDDEN", "requested tenant is not authorised for this principal")
 			return
 		}
@@ -69,6 +68,16 @@ func GinProtect() gin.HandlerFunc {
 // HTTP contract tests use this instead of GinProtect.
 func WithPrincipalForTest(ctx context.Context, tenantID string) context.Context {
 	return context.WithValue(ctx, principalKey, principal{tenantID: tenantID})
+}
+
+// PrincipalTenant returns the verified JWT tenant, if a principal is on the request.
+func PrincipalTenant(c *gin.Context) (string, bool) {
+	p, ok := c.Request.Context().Value(principalKey).(principal)
+	if !ok {
+		return "", false
+	}
+	tenantID := strings.TrimSpace(p.tenantID)
+	return tenantID, tenantID != ""
 }
 
 func EnsureBodyTenant(c *gin.Context, bodyTenantID string) bool {
@@ -122,13 +131,36 @@ func jwtIssuer() string {
 
 var tenantHeaders = []string{"X-Tenant-ID", "x-tenant-id", "tenant-id", "tenant_id"}
 
-func requestedTenant(r *http.Request) string {
+func requestedTenants(r *http.Request) []string {
+	seen := map[string]struct{}{}
+	var out []string
+	add := func(v string) {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			return
+		}
+		key := strings.ToLower(v)
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		out = append(out, v)
+	}
 	for _, h := range tenantHeaders {
-		if v := strings.TrimSpace(r.Header.Get(h)); v != "" {
-			return v
+		add(r.Header.Get(h))
+	}
+	add(r.URL.Query().Get("tenant_id"))
+	return out
+}
+
+func mismatchedRequestedTenant(jwtTenant string, requested []string) string {
+	jwtTenant = strings.TrimSpace(jwtTenant)
+	for _, t := range requested {
+		if !strings.EqualFold(jwtTenant, t) {
+			return t
 		}
 	}
-	return strings.TrimSpace(r.URL.Query().Get("tenant_id"))
+	return ""
 }
 
 func abort(c *gin.Context, status int, code, message string) {
