@@ -63,6 +63,13 @@ func reconcilePayout(in PayoutInput) FinancialResult {
 		out.BankCreditProven = false
 		return out
 	case razorpay.IsPayoutProcessed(status):
+		if currencySidesConflict(p.Currency, bankCurrencies(in.Banks)) {
+			if exact != nil {
+				out.ObservedAmount = exact.DebitMinor
+				out.EvidenceRefs.BankObservationID = exact.ID
+			}
+			return withException(out, ResultVariance, "currency_mismatch", 0.95)
+		}
 		if exact != nil {
 			out.Result = ResultMatched
 			out.Reason = "processed_exact_debit"
