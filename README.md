@@ -1,10 +1,8 @@
 <div align="center">
 
-<img src="docs/assets/mark.svg" width="64" height="64" alt="Razorpay Reconciliation" />
-
-# Razorpay Reconciliation
-
-**Match Razorpay settlements to bank cash. Prove the exceptions.**
+<h1>
+  <img src="docs/assets/header.png" alt="Razorpay Reconciliation" width="880" />
+</h1>
 
 Ingest events and files · reconcile a batch · cite evidence
 
