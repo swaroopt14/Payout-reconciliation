@@ -107,6 +107,7 @@ func (s *Service) Run(ctx context.Context, req RunRequest) (Report, error) {
 		CashPosition: map[string]any{
 			"gross_captured_minor":        cash.GrossCapturedMinor,
 			"settlement_expected_net_minor": cash.SettlementExpectedNetMinor,
+			"settlement_derived_net_minor":  cash.SettlementDerivedNetMinor,
 			"bank_credited_proven_minor":  cash.BankCreditedProvenMinor,
 			"in_flight_minor":             cash.InFlightMinor,
 			"unresolved_exposure_minor":   cash.UnresolvedExposureMinor,

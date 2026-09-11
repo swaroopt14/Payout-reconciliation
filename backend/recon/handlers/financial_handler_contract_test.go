@@ -139,7 +139,7 @@ func TestCashPositionJSON(t *testing.T) {
 	if code != 200 {
 		t.Fatalf("code=%d %v", code, body)
 	}
-	for _, k := range []string{"gross_captured_minor", "settlement_expected_net_minor", "bank_credited_proven_minor", "in_flight_minor", "unresolved_exposure_minor", "currency"} {
+	for _, k := range []string{"gross_captured_minor", "settlement_expected_net_minor", "settlement_derived_net_minor", "bank_credited_proven_minor", "in_flight_minor", "unresolved_exposure_minor", "currency"} {
 		if _, ok := body[k]; !ok {
 			t.Fatalf("missing %s", k)
 		}

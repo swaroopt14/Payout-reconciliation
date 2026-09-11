@@ -5,6 +5,7 @@ import "time"
 type CashSnapshot struct {
 	GrossCapturedMinor           int64     `json:"gross_captured_minor"`
 	SettlementExpectedNetMinor   int64     `json:"settlement_expected_net_minor"`
+	SettlementDerivedNetMinor    int64     `json:"settlement_derived_net_minor"`
 	BankCreditedProvenMinor      int64     `json:"bank_credited_proven_minor"`
 	InFlightMinor                int64     `json:"in_flight_minor"`
 	UnresolvedExposureMinor      int64     `json:"unresolved_exposure_minor"`
@@ -34,6 +35,7 @@ func CashPosition(results []FinancialResult, lines []SettlementLine, exceptions 
 		out.GrossCapturedMinor += r.ExpectedAmount
 		if net, ok := netByPayment[r.EntityID]; ok {
 			out.SettlementExpectedNetMinor += net
+			out.SettlementDerivedNetMinor += net
 		}
 		if r.BankCreditProven {
 			out.BankCreditedProvenMinor += r.ObservedAmount
