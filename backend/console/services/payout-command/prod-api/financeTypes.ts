@@ -50,6 +50,7 @@ export type FinanceSummary = {
 export type FinanceCashPosition = {
   gross_captured_minor: number
   settlement_expected_net_minor: number
+  settlement_derived_net_minor?: number
   bank_credited_proven_minor: number
   in_flight_minor: number
   unresolved_exposure_minor: number

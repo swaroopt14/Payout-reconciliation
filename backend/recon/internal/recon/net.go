@@ -81,7 +81,9 @@ func Waterfall(lines []SettlementLine, settlementID string) map[string]int64 {
 			out["taxes"] += l.TaxMinor
 		}
 	}
-	out["expected_net"] = SettlementNetMinor(lines, settlementID)
+	net := SettlementNetMinor(lines, settlementID)
+	out["derived_net"] = net
+	out["expected_net"] = net
 	return out
 }
 

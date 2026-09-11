@@ -211,6 +211,7 @@ func ProofJSON(sub ProofSubject, leaves []EvidenceLeaf) map[string]any {
 				"fully_reconciled": sub.ReconciliationState == ReconFullyReconciled,
 			},
 			"amounts": map[string]any{
+				"derived_net":  sub.ExpectedNetMinor,
 				"expected_net": sub.ExpectedNetMinor,
 				"bank_credit":  sub.BankCreditMinor,
 				"difference":   sub.DifferenceMinor,

@@ -12,7 +12,7 @@ func TestSettlementNetUsesCreditMinusDebit(t *testing.T) {
 		t.Fatalf("net=%d", got)
 	}
 	wf := Waterfall(lines, "s")
-	if wf["refunds"] != 1000 || wf["expected_net"] != 95578 {
+	if wf["refunds"] != 1000 || wf["derived_net"] != 95578 || wf["expected_net"] != 95578 {
 		t.Fatalf("%v", wf)
 	}
 }

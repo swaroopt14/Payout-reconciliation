@@ -50,5 +50,5 @@ func formatInt(v int64) string {
 }
 
 func GetSettlementBreakdownAnswer(wf map[string]int64) string {
-	return "Settlement waterfall uses recon lines only. Expected net is not bank credit. expected_net=" + formatInt(wf["expected_net"])
+	return "Settlement waterfall uses recon lines only. Derived net is PSP arithmetic, not an independent expectation or bank credit. derived_net=" + formatInt(wf["derived_net"])
 }
