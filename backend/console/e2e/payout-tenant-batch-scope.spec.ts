@@ -114,9 +114,6 @@ test.describe('batch-scoped surfaces (session tenant via BFF + batch in query)',
   test.beforeEach(async ({ page, context }) => {
     await installPayoutSessionCookies(context)
     await installAuthAndProdMocks(page)
-    await page.addInitScript((tid) => {
-      localStorage.setItem('zord_tenant_id', tid)
-    }, SESSION_TENANT)
   })
 
   test('intent journal requests batch_id and never client tenant_id', async ({ page }) => {
@@ -209,9 +206,6 @@ test.describe.skip('batch-scoped intelligence KPIs (legacy docks removed)', () =
   test.beforeEach(async ({ page, context }) => {
     await installPayoutSessionCookies(context)
     await installAuthAndProdMocks(page)
-    await page.addInitScript((tid) => {
-      localStorage.setItem('zord_tenant_id', tid)
-    }, SESSION_TENANT)
   })
 
   const INTELLIGENCE_BATCH_ROUTES = [
@@ -297,9 +291,6 @@ test.describe('tenant-scoped surfaces (no batch_id on client prod GETs)', () => 
   test.beforeEach(async ({ page, context }) => {
     await installPayoutSessionCookies(context)
     await installAuthAndProdMocks(page)
-    await page.addInitScript((tid) => {
-      localStorage.setItem('zord_tenant_id', tid)
-    }, SESSION_TENANT)
   })
 
   test('exceptions page does not send client tenant_id', async ({ page }) => {

@@ -25,10 +25,10 @@ async function installAuthIntelligenceAndPromptMocks(page: Page) {
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify({
-        user: { id: 'e2e-user', name: 'E2E User', email: 'e2e@test.com' },
-        tenantId: SESSION_TENANT,
-      }),
+        body: JSON.stringify({
+          user: { id: 'e2e-user', name: 'E2E User', email: 'e2e@test.com', tenant_id: SESSION_TENANT },
+          session: { tenant_id: SESSION_TENANT },
+        }),
     })
   })
 
@@ -48,9 +48,6 @@ test.describe('Ask Zord workspace', () => {
   test.beforeEach(async ({ context, page }) => {
     await installPayoutSessionCookies(context)
     await installAuthIntelligenceAndPromptMocks(page)
-    await page.addInitScript((tid) => {
-      localStorage.setItem('zord_tenant_id', tid)
-    }, SESSION_TENANT)
   })
 
   test('loads Ask Zord', async ({ page }) => {

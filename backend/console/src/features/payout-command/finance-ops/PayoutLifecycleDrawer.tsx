@@ -10,6 +10,7 @@ import { ErrorInvestigationPanel } from './ErrorInvestigationPanel'
 import { buildRazorpayXError } from './razorpayXErrors'
 import { payoutStatusTone, type RazorpayPayoutStatus } from './razorpayPayoutStatus'
 import { useFinanceTimeline } from './FinanceTimelineLadder'
+import { ReconLegBadge } from './reconLegs'
 
 function asStatus(status?: string | null): RazorpayPayoutStatus {
   const s = String(status || '').toLowerCase()
@@ -76,6 +77,14 @@ export function PayoutLifecycleDrawer({
           </p>
         </div>
         <StatusBadge tone={payoutStatusTone(status)}>{status}</StatusBadge>
+      </div>
+      <div className="grid grid-cols-3 gap-3 border-b border-[#EEF0F3] px-5 py-3">
+        <div>
+          <p className="text-[10px] font-semibold uppercase tracking-[0.06em] text-[#8F8F8F]">Close</p>
+          <p className="mt-1 text-[12px] font-semibold text-[#1A1A1A]">{row.result || '—'}</p>
+        </div>
+        <ReconLegBadge label="2-way" leg={row.twoWay} />
+        <ReconLegBadge label="3-way" leg={row.threeWay} />
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
         <div className="mt-1">

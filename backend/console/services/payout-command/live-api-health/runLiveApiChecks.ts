@@ -251,6 +251,17 @@ export async function runLiveApiChecks(options: RunLiveApiChecksOptions = {}): P
       },
     },
     {
+      id: 'recon-cash-instruments',
+      label: 'Recon · cash instruments',
+      url: '/api/prod/cash/instruments',
+      summarize: (d) => {
+        const body = d as { instruments?: unknown[] } | null
+        if (!body) return { status: 'error', detail: 'No response' }
+        const n = body.instruments?.length ?? 0
+        return { status: n > 0 ? 'ok' : 'empty', detail: n > 0 ? `${n} rail(s)` : 'no instruments' }
+      },
+    },
+    {
       id: 'zord-overview',
       label: 'Zord metrics · overview',
       url: '/api/prod/zord/metrics/overview?time_range=24h',
