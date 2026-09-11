@@ -3,14 +3,21 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
+use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+use serde::Serialize;
 use serde_json::{json, Value};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tower::ServiceExt;
 use zord_router::config::Config;
 use zord_router::http::app;
 use zord_router::service::AppState;
 
+const TEST_ROUTER_TOKEN: &str = "test-router-token";
+
 fn state() -> AppState {
-    AppState::memory_only(Config::from_env())
+    let mut config = Config::from_env();
+    config.router_auth_token = Some(TEST_ROUTER_TOKEN.into());
+    AppState::memory_only(config)
 }
 
 async fn json_request(
@@ -22,7 +29,8 @@ async fn json_request(
     let builder = Request::builder()
         .method(method)
         .uri(uri)
-        .header("content-type", "application/json");
+        .header("content-type", "application/json")
+        .header("x-router-token", TEST_ROUTER_TOKEN);
     let request = if let Some(body) = body {
         builder.body(Body::from(body.to_string())).unwrap()
     } else {
@@ -298,4 +306,110 @@ async fn metrics_exposes_prometheus_counters() {
     let text = String::from_utf8(response.into_body().collect().await.unwrap().to_bytes().to_vec()).unwrap();
     assert!(text.contains("routing_requests_total"));
     assert!(text.contains("processor_selection_total"));
+}
+
+#[tokio::test]
+async fn routing_route_without_credentials_is_unauthorized() {
+    let request = Request::builder()
+        .method("POST")
+        .uri("/v1/routing/route")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            json!({
+                "payment_id": "pout_noauth",
+                "amount_minor": 1000,
+                "currency": "INR",
+                "payment_method": "IMPS",
+                "direction": "OUTBOUND"
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    let response = app(state()).oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[derive(Serialize)]
+struct TestClaims {
+    tenant_id: String,
+    user_id: String,
+    iss: String,
+    exp: usize,
+}
+
+fn mint_jwt(secret: &str, tenant: &str) -> String {
+    let exp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as usize
+        + 3600;
+    encode(
+        &Header::new(Algorithm::HS256),
+        &TestClaims {
+            tenant_id: tenant.into(),
+            user_id: "user-1".into(),
+            iss: "zord-edge".into(),
+            exp,
+        },
+        &EncodingKey::from_secret(secret.as_bytes()),
+    )
+    .unwrap()
+}
+
+fn jwt_state() -> AppState {
+    let mut config = Config::from_env();
+    config.router_auth_token = None;
+    config.jwt_signing_secret = Some("jwt-secret-for-tests".into());
+    config.jwt_issuer = "zord-edge".into();
+    AppState::memory_only(config)
+}
+
+#[tokio::test]
+async fn routing_route_accepts_matching_jwt() {
+    let token = mint_jwt("jwt-secret-for-tests", "tenant-a");
+    let request = Request::builder()
+        .method("POST")
+        .uri("/v1/routing/route")
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {token}"))
+        .header("x-tenant-id", "tenant-a")
+        .body(Body::from(
+            json!({
+                "payment_id": "pout_jwt",
+                "tenant_id": "tenant-a",
+                "amount_minor": 1000,
+                "currency": "INR",
+                "payment_method": "IMPS",
+                "direction": "OUTBOUND"
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    let response = app(jwt_state()).oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn routing_route_rejects_jwt_tenant_mismatch() {
+    let token = mint_jwt("jwt-secret-for-tests", "tenant-a");
+    let request = Request::builder()
+        .method("POST")
+        .uri("/v1/routing/route")
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {token}"))
+        .header("x-tenant-id", "tenant-b")
+        .body(Body::from(
+            json!({
+                "payment_id": "pout_jwt_mismatch",
+                "tenant_id": "tenant-b",
+                "amount_minor": 1000,
+                "currency": "INR",
+                "payment_method": "IMPS",
+                "direction": "OUTBOUND"
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    let response = app(jwt_state()).oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }

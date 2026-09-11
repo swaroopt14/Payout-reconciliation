@@ -1,19 +1,27 @@
 use std::time::Duration;
 
 use axum::{
-    extract::State,
+    extract::{Extension, State},
     http::{HeaderMap, StatusCode},
+    middleware,
     routing::{get, post},
     Json, Router,
 };
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
+use crate::auth::{self, Principal};
 use crate::service::AppState;
 use crate::types::{ErrorBody, OutcomeRequest, RouteDecision, RouteRequest, RoutingRule};
 
 pub fn app(state: AppState) -> Router {
     let timeout = state.config.request_timeout;
+    let protected = Router::new()
+        .route("/v1/routing/rules", get(rules).post(upsert_rule))
+        .route("/v1/routing/route", post(decide))
+        .route("/v1/route", post(decide))
+        .route("/v1/routing/outcome", post(outcome))
+        .route_layer(middleware::from_fn_with_state(state.clone(), auth::require_auth));
     Router::new()
         .route("/health", get(health))
         .route("/ready", get(ready))
@@ -21,10 +29,7 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/health", get(health))
         .route("/v1/processors", get(list_processors))
         .route("/v1/connectors", get(list_processors))
-        .route("/v1/routing/rules", get(rules).post(upsert_rule))
-        .route("/v1/routing/route", post(decide))
-        .route("/v1/route", post(decide))
-        .route("/v1/routing/outcome", post(outcome))
+        .merge(protected)
         .with_state(state)
         .layer(TimeoutLayer::new(timeout.max(Duration::from_millis(50))))
         .layer(TraceLayer::new_for_http())
@@ -58,8 +63,17 @@ async fn rules(State(state): State<AppState>) -> Json<serde_json::Value> {
 
 async fn upsert_rule(
     State(state): State<AppState>,
+    principal: Option<Extension<Principal>>,
     Json(rule): Json<RoutingRule>,
 ) -> Result<Json<RoutingRule>, (StatusCode, Json<ErrorBody>)> {
+    if auth::tenant_forbidden(principal.as_deref(), rule.merchant_id.as_deref()) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(ErrorBody {
+                error: "requested tenant is not authorised for this principal".into(),
+            }),
+        ));
+    }
     let Some(pg) = &state.postgres else {
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
@@ -80,8 +94,17 @@ async fn upsert_rule(
 async fn decide(
     State(state): State<AppState>,
     headers: HeaderMap,
+    principal: Option<Extension<Principal>>,
     Json(req): Json<RouteRequest>,
 ) -> Result<Json<RouteDecision>, (StatusCode, Json<ErrorBody>)> {
+    if auth::tenant_forbidden(principal.as_deref(), req.tenant_id.as_deref()) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(ErrorBody {
+                error: "requested tenant is not authorised for this principal".into(),
+            }),
+        ));
+    }
     let idempotency = headers
         .get("Idempotency-Key")
         .and_then(|v| v.to_str().ok())

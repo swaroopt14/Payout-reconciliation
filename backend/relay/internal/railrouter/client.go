@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 )
@@ -46,6 +47,7 @@ type Outcome struct {
 
 type Client struct {
 	baseURL    string
+	token      string
 	httpClient *http.Client
 }
 
@@ -56,6 +58,7 @@ func New(baseURL string, timeout time.Duration) *Client {
 	}
 	return &Client{
 		baseURL:    baseURL,
+		token:      strings.TrimSpace(os.Getenv("ROUTER_AUTH_TOKEN")),
 		httpClient: &http.Client{Timeout: timeout},
 	}
 }
@@ -73,6 +76,9 @@ func (c *Client) Route(ctx context.Context, in Request) (Decision, error) {
 		return Decision{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if c.token != "" {
+		req.Header.Set("X-Router-Token", c.token)
+	}
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return Decision{}, err
@@ -104,6 +110,9 @@ func (c *Client) ReportOutcome(ctx context.Context, in Outcome) error {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if c.token != "" {
+		req.Header.Set("X-Router-Token", c.token)
+	}
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return err

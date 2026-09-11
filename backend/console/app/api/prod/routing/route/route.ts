@@ -4,7 +4,7 @@ import {
   applyRefreshedSessionCookies,
   requireSessionTenantForProdProxy,
 } from '@/services/auth/resolvePayoutTenant.server'
-import { routerUrl } from '../_shared'
+import { routerUpstreamHeaders, routerUrl } from '../_shared'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -30,8 +30,7 @@ export async function POST(request: NextRequest) {
     const upstream = await fetch(url, {
       method: 'POST',
       headers: {
-        'content-type': 'application/json',
-        'x-tenant-id': tenantId,
+        ...routerUpstreamHeaders(request, tenantId),
       },
       body: JSON.stringify(body),
       cache: 'no-store',
