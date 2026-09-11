@@ -411,3 +411,71 @@ func TestRunRejectsConcurrentTenantLock(t *testing.T) {
 		t.Fatalf("status=%s", run.Status)
 	}
 }
+
+func TestPAY_FeeMismatchIsVarianceEvenWithExactBank(t *testing.T) {
+	got := ReconcilePayment(FinancialInput{
+		Payment: PaymentFact{
+			ID: "cp_fee", PaymentID: "pay_fee", CanonicalStatus: PaymentCaptured, Captured: true,
+			AmountMinor: 10000, FeeMinor: 272, TaxMinor: 0,
+		},
+		Lines: []SettlementLine{{
+			ID: "sl_fee", PaymentID: "pay_fee", LineType: "payment",
+			AmountMinor: 10000, CreditMinor: 9600, FeeMinor: 400, Currency: "INR",
+		}},
+		Decisions: []SettlementBankDecision{{
+			ID: "d_fee", SettlementLineID: "sl_fee", BankObservationID: "b_fee",
+			State: BankMatchExact, Confidence: 0.99,
+			Evidence: map[string]any{"bank_credit_minor": int64(9600)},
+		}},
+		Banks: []BankTxn{{ID: "b_fee", UTR: "UTR_FEE", CreditMinor: 9600, CreditDebit: "CREDIT", Currency: "INR"}},
+	})
+	if got.Result != ResultVariance || got.Reason != "fee_mismatch" {
+		t.Fatalf("result=%s reason=%s", got.Result, got.Reason)
+	}
+	if got.VarianceAmount != 128 {
+		t.Fatalf("variance=%d", got.VarianceAmount)
+	}
+	if got.Exception == nil {
+		t.Fatal("expected exception")
+	}
+}
+
+func TestPAY_TaxMismatchIsVariance(t *testing.T) {
+	got := ReconcilePayment(FinancialInput{
+		Payment: PaymentFact{
+			PaymentID: "pay_tax", CanonicalStatus: PaymentCaptured, Captured: true,
+			AmountMinor: 10000, FeeMinor: 272, TaxMinor: 49,
+		},
+		Lines: []SettlementLine{{
+			ID: "sl_tax", PaymentID: "pay_tax", LineType: "payment",
+			AmountMinor: 10000, CreditMinor: 9679, FeeMinor: 272, TaxMinor: 100, Currency: "INR",
+		}},
+	})
+	if got.Result != ResultVariance || got.Reason != "tax_mismatch" {
+		t.Fatalf("result=%s reason=%s", got.Result, got.Reason)
+	}
+	if got.VarianceAmount != 51 {
+		t.Fatalf("variance=%d", got.VarianceAmount)
+	}
+}
+
+func TestPAY_UnreportedPaymentFeeDoesNotInventMismatch(t *testing.T) {
+	got := ReconcilePayment(FinancialInput{
+		Payment: PaymentFact{
+			PaymentID: "pay_nofee", CanonicalStatus: PaymentCaptured, Captured: true, AmountMinor: 10000,
+		},
+		Lines: []SettlementLine{{
+			ID: "sl1", PaymentID: "pay_nofee", LineType: "payment",
+			AmountMinor: 10000, CreditMinor: 9728, FeeMinor: 272, Currency: "INR",
+		}},
+		Decisions: []SettlementBankDecision{{
+			ID: "d1", SettlementLineID: "sl1", BankObservationID: "b1",
+			State: BankMatchExact, Confidence: 0.99,
+			Evidence: map[string]any{"bank_credit_minor": int64(9728)},
+		}},
+		Banks: []BankTxn{{ID: "b1", CreditMinor: 9728, CreditDebit: "CREDIT", Currency: "INR"}},
+	})
+	if got.Result != ResultMatched {
+		t.Fatalf("result=%s reason=%s", got.Result, got.Reason)
+	}
+}
