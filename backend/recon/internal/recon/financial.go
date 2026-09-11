@@ -52,6 +52,7 @@ type PaymentFact struct {
 	Sources           []string
 	FeeMinor          int64
 	TaxMinor          int64
+	BatchID           string
 }
 
 type ObservationFact struct {
@@ -86,6 +87,7 @@ type PayoutFact struct {
 	StatusReason      string
 	ProviderCreatedAt time.Time
 	FirstObservedAt   time.Time
+	BatchID           string
 }
 
 type PayoutInput struct {
