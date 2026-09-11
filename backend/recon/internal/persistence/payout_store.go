@@ -134,7 +134,7 @@ func (s *SQLStore) ListPayoutObservationEvents(ctx context.Context, tenantID, co
 func (s *ReconSQLStore) ListCanonicalPayouts(ctx context.Context, tenantID, connectorID string) ([]recon.PayoutFact, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id::text, payout_id, provider_status, amount_minor, currency, COALESCE(utr,''), COALESCE(mode,''),
-			COALESCE(purpose,''), COALESCE(status_reason,''), provider_created_at, first_observed_at
+			COALESCE(purpose,''), COALESCE(status_reason,''), provider_created_at, first_observed_at, COALESCE(batch_id,'')
 		FROM canonical_payouts WHERE tenant_id=$1 AND connector_id=$2 ORDER BY last_observed_at ASC`,
 		tenantID, connectorID)
 	if err != nil {
@@ -155,7 +155,7 @@ func (s *ReconSQLStore) ListCanonicalPayouts(ctx context.Context, tenantID, conn
 func (s *ReconSQLStore) GetCanonicalPayoutFact(ctx context.Context, tenantID, connectorID, payoutID string) (recon.PayoutFact, bool, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id::text, payout_id, provider_status, amount_minor, currency, COALESCE(utr,''), COALESCE(mode,''),
-			COALESCE(purpose,''), COALESCE(status_reason,''), provider_created_at, first_observed_at
+			COALESCE(purpose,''), COALESCE(status_reason,''), provider_created_at, first_observed_at, COALESCE(batch_id,'')
 		FROM canonical_payouts WHERE tenant_id=$1 AND connector_id=$2 AND payout_id=$3`,
 		tenantID, connectorID, payoutID)
 	p, err := scanPayoutFact(row)
@@ -195,7 +195,7 @@ func scanPayoutFact(row scanner) (recon.PayoutFact, error) {
 	var p recon.PayoutFact
 	var created sql.NullTime
 	err := row.Scan(&p.ID, &p.PayoutID, &p.ProviderStatus, &p.AmountMinor, &p.Currency,
-		&p.UTR, &p.Mode, &p.Purpose, &p.StatusReason, &created, &p.FirstObservedAt)
+		&p.UTR, &p.Mode, &p.Purpose, &p.StatusReason, &created, &p.FirstObservedAt, &p.BatchID)
 	if err != nil {
 		return recon.PayoutFact{}, err
 	}

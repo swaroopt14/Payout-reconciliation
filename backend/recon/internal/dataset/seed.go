@@ -135,10 +135,10 @@ func insertCase(ctx context.Context, tx *sql.Tx, cfg SeedConfig, c eval.Case, id
 		if _, err = tx.ExecContext(ctx, `
 			INSERT INTO canonical_payments (
 				id, tenant_id, connector_id, provider, payment_id, amount_minor, currency,
-				provider_status, canonical_status, captured, fee_minor, tax_minor, sources
-			) VALUES ($1,$2,$3,'razorpay',$4,$5,$6,$7,$8,$9,$10,$11,'{seed}')`,
+				provider_status, canonical_status, captured, fee_minor, tax_minor, sources, batch_id
+			) VALUES ($1,$2,$3,'razorpay',$4,$5,$6,$7,$8,$9,$10,$11,'{seed}',$12)`,
 			cpID, cfg.TenantID, cfg.ConnectorID, entityID, p.AmountMinor, nz(c.Currency, "INR"),
-			status, status, p.Captured, 0, 0,
+			status, status, p.Captured, 0, 0, cfg.BatchID,
 		); err != nil {
 			return "", "", err
 		}
@@ -177,10 +177,10 @@ func insertCase(ctx context.Context, tx *sql.Tx, cfg SeedConfig, c eval.Case, id
 		if _, err = tx.ExecContext(ctx, `
 			INSERT INTO canonical_payouts (
 				id, tenant_id, connector_id, provider, payout_id, amount_minor, currency,
-				provider_status, utr, mode, purpose, status_reason
-			) VALUES ($1,$2,$3,'razorpay',$4,$5,$6,$7,$8,$9,$10,$11)`,
+				provider_status, utr, mode, purpose, status_reason, batch_id
+			) VALUES ($1,$2,$3,'razorpay',$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
 			uuid.Must(uuid.NewV7()), cfg.TenantID, cfg.ConnectorID, entityID, po.AmountMinor, nz(c.Currency, "INR"),
-			po.ProviderStatus, po.UTR, po.Mode, po.Purpose, po.StatusReason,
+			po.ProviderStatus, po.UTR, po.Mode, po.Purpose, po.StatusReason, cfg.BatchID,
 		); err != nil {
 			return "", "", err
 		}

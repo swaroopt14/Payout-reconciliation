@@ -64,6 +64,7 @@ type CanonicalPayment struct {
 	Sources          []string
 	IntentID         string
 	IntentLink       string
+	BatchID          string
 }
 
 func Rank(status string) int {
