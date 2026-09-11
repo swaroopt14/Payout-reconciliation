@@ -47,11 +47,11 @@ This project closes one loop on a batch of records:
 
 `MATCHED` means the books are accounted for. It is not `fully_reconciled` and not `bank_credited`. Failed payments with no settlement and no bank movement are `MATCHED` (nothing moved). Unexplained bank CREDIT/DEBIT is `UNRESOLVED` plus an exception.
 
-A payment can succeed at checkout and still fail finance. Authorization, capture, settlement, and bank receipt are separate events. The diagram below is the PSP lifecycle. `succeeded` is not money in the merchant bank account.
+A payment can succeed at checkout and still fail finance. Authorization, capture, settlement, and bank receipt are separate events. The control plane below is how those sources become one recon result.
 
 <div align="center">
-  <img src="docs/assets/image.png" alt="Payment status lifecycle from authorization and capture to succeeded, failed, or expired" width="920" />
-  <p><em>PSP payment lifecycle. Capture proves the processor took the sale. It does not prove the bank credit arrived.</em></p>
+  <img src="readme.png" alt="Reconciliation control plane: merchant, orchestration, PSP, and bank sources into adapters, canonical ledger, matching, settlement-batch ledger, and exception queue" width="920" />
+  <p><em>Merchant, PSP, and bank records enter one control plane. 2-way matches merchant books to the PSP. 3-way proves the bank credit. Restatements are new versions, not silent overwrites.</em></p>
 </div>
 
 ---
