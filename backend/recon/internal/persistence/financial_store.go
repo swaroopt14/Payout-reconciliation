@@ -2,9 +2,11 @@ package persistence
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	"zord-outcome-engine/internal/paymenttruth"
@@ -13,6 +15,36 @@ import (
 	"github.com/google/uuid"
 	"github.com/lib/pq"
 )
+
+func tenantRunLockKey(tenantID, connectorID string) int64 {
+	sum := sha256.Sum256([]byte(strings.ToLower(strings.TrimSpace(tenantID)) + "|" + strings.ToLower(strings.TrimSpace(connectorID))))
+	var key uint64
+	for i := 0; i < 8; i++ {
+		key = (key << 8) | uint64(sum[i])
+	}
+	return int64(key)
+}
+
+func (s *ReconSQLStore) TryLockTenantRun(ctx context.Context, tenantID, connectorID string) (func(), error) {
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var ok bool
+	key := tenantRunLockKey(tenantID, connectorID)
+	if err := conn.QueryRowContext(ctx, `SELECT pg_try_advisory_lock($1)`, key).Scan(&ok); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	if !ok {
+		_ = conn.Close()
+		return nil, recon.ErrRunInProgress
+	}
+	return func() {
+		_, _ = conn.ExecContext(context.Background(), `SELECT pg_advisory_unlock($1)`, key)
+		_ = conn.Close()
+	}, nil
+}
 
 func (s *ReconSQLStore) ListCanonicalPayments(ctx context.Context, tenantID, connectorID string) ([]recon.PaymentFact, error) {
 	rows, err := s.db.QueryContext(ctx, `

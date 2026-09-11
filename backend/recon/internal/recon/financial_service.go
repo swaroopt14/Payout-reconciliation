@@ -3,6 +3,7 @@ package recon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sort"
 	"strings"
 	"time"
@@ -11,6 +12,11 @@ import (
 
 	"github.com/google/uuid"
 )
+
+// ErrRunInProgress is returned when another reconciliation run already holds
+// the tenant+connector lock. Callers should treat this as success-for-scheduler
+// / 409-for-operators, not as a failed close.
+var ErrRunInProgress = errors.New("reconciliation already running for tenant")
 
 type FinancialStore interface {
 	ListCanonicalPayments(ctx context.Context, tenantID, connectorID string) ([]PaymentFact, error)
@@ -24,6 +30,7 @@ type FinancialStore interface {
 	ListSettlementBankDecisions(ctx context.Context, tenantID, connectorID string) ([]SettlementBankDecision, error)
 	ListRefunds(ctx context.Context, tenantID, connectorID, paymentID string) ([]RefundFact, error)
 	UpsertRefund(ctx context.Context, tenantID, connectorID string, r RefundFact) (RefundFact, error)
+	TryLockTenantRun(ctx context.Context, tenantID, connectorID string) (unlock func(), err error)
 	InsertReconciliationRun(ctx context.Context, run ReconciliationRun) (ReconciliationRun, error)
 	CompleteReconciliationRun(ctx context.Context, run ReconciliationRun) error
 	GetReconciliationRun(ctx context.Context, tenantID, runID string) (ReconciliationRun, error)
@@ -58,6 +65,12 @@ type FinancialRunRequest struct {
 }
 
 func (s *FinancialService) Run(ctx context.Context, req FinancialRunRequest) (ReconciliationRun, []FinancialResult, error) {
+	unlock, err := s.Store.TryLockTenantRun(ctx, req.TenantID, req.ConnectorID)
+	if err != nil {
+		return ReconciliationRun{}, nil, err
+	}
+	defer unlock()
+
 	now := s.now()
 	run, err := s.Store.InsertReconciliationRun(ctx, ReconciliationRun{
 		TenantID:    req.TenantID,
