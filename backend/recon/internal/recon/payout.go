@@ -13,6 +13,9 @@ func ReconcilePayout(in PayoutInput) FinancialResult {
 		out.Rail = NormalizeRail(in.Payout.Mode)
 	}
 	AnnotateCashFlow(&out)
+	if out.RuleVersion == "" {
+		out.RuleVersion = FinancialRuleVersion
+	}
 	return out
 }
 

@@ -121,6 +121,7 @@ type FinancialResult struct {
 	VarianceAmount   int64
 	Confidence       float64
 	Reason           string
+	RuleVersion      string
 	CandidateIDs     []string
 	EvidenceRefs     EvidenceRefs
 	BankCreditProven bool
@@ -138,6 +139,9 @@ func ReconcilePayment(in FinancialInput) FinancialResult {
 		out.Rail = NormalizeRail(in.Payment.Method)
 	}
 	AnnotateCashFlow(&out)
+	if out.RuleVersion == "" {
+		out.RuleVersion = FinancialRuleVersion
+	}
 	return out
 }
 
@@ -344,6 +348,9 @@ func reconcileCaptured(out FinancialResult, in FinancialInput, hasPaymentSettlem
 func OrphanBankResult(b BankTxn) FinancialResult {
 	out := orphanBankResult(b)
 	AnnotateCashFlow(&out)
+	if out.RuleVersion == "" {
+		out.RuleVersion = FinancialRuleVersion
+	}
 	return out
 }
 
