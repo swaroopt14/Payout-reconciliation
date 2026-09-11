@@ -169,3 +169,27 @@ func TestFinancialRunScopedToPayoutIDsSkipsPayments(t *testing.T) {
 		t.Fatalf("close=%+v ok=%v err=%v", got, ok, err)
 	}
 }
+
+func TestPAYO_UTRMatchWrongAmountIsVariance(t *testing.T) {
+	got := ReconcilePayout(PayoutInput{
+		Payout: PayoutFact{
+			ID: "cpout_var", PayoutID: "pout_var", ProviderStatus: razorpay.PayoutProcessed,
+			AmountMinor: 25000, Currency: "INR", UTR: "UTRVAR1",
+		},
+		Banks: []BankTxn{{
+			ID: "bdebit_short", UTR: "UTRVAR1", DebitMinor: 24500, CreditDebit: "DEBIT", Currency: "INR",
+		}},
+	})
+	if got.Result != ResultVariance || got.Reason != "amount_mismatch" {
+		t.Fatalf("result=%s reason=%s", got.Result, got.Reason)
+	}
+	if got.VarianceAmount != 500 {
+		t.Fatalf("variance=%d", got.VarianceAmount)
+	}
+	if got.BankCreditProven {
+		t.Fatal("wrong-amount UTR must not prove bank movement")
+	}
+	if got.ThreeWay.Result == ResultMatched {
+		t.Fatalf("3-way must not match: %+v", got.ThreeWay)
+	}
+}
