@@ -51,7 +51,7 @@ func (s *ReconSQLStore) ListCanonicalPayments(ctx context.Context, tenantID, con
 		SELECT id::text, tenant_id::text, connector_id::text, provider, payment_id, COALESCE(order_id,''),
 			amount_minor, currency, COALESCE(method,''), provider_status, canonical_status, captured,
 			fee_minor, tax_minor, provider_created_at, captured_at, first_observed_at, last_observed_at,
-			COALESCE(sources, '{}'), COALESCE(intent_id::text,''), intent_link
+			COALESCE(sources, '{}'), COALESCE(intent_id::text,''), intent_link, COALESCE(batch_id,'')
 		FROM canonical_payments
 		WHERE tenant_id=$1 AND connector_id=$2
 		ORDER BY last_observed_at ASC`, tenantID, connectorID)
@@ -75,7 +75,7 @@ func (s *ReconSQLStore) GetCanonicalPayment(ctx context.Context, tenantID, conne
 		SELECT id::text, tenant_id::text, connector_id::text, provider, payment_id, COALESCE(order_id,''),
 			amount_minor, currency, COALESCE(method,''), provider_status, canonical_status, captured,
 			fee_minor, tax_minor, provider_created_at, captured_at, first_observed_at, last_observed_at,
-			COALESCE(sources, '{}'), COALESCE(intent_id::text,''), intent_link
+			COALESCE(sources, '{}'), COALESCE(intent_id::text,''), intent_link, COALESCE(batch_id,'')
 		FROM canonical_payments
 		WHERE tenant_id=$1 AND connector_id=$2 AND payment_id=$3`,
 		tenantID, connectorID, paymentID)
@@ -101,7 +101,7 @@ func scanCanonicalPayment(row scanner) (paymenttruth.CanonicalPayment, error) {
 		&pay.ID, &pay.TenantID, &pay.ConnectorID, &pay.Provider, &pay.PaymentID, &pay.OrderID,
 		&pay.AmountMinor, &pay.Currency, &pay.Method, &pay.ProviderStatus, &pay.CanonicalStatus, &pay.Captured,
 		&pay.FeeMinor, &pay.TaxMinor, &providerCreated, &capturedAt, &pay.FirstObservedAt, &pay.LastObservedAt,
-		&sources, &pay.IntentID, &pay.IntentLink,
+		&sources, &pay.IntentID, &pay.IntentLink, &pay.BatchID,
 	)
 	if err != nil {
 		return paymenttruth.CanonicalPayment{}, err
@@ -155,6 +155,7 @@ func toPaymentFact(pay paymenttruth.CanonicalPayment) recon.PaymentFact {
 		Sources:           pay.Sources,
 		FeeMinor:          pay.FeeMinor,
 		TaxMinor:          pay.TaxMinor,
+		BatchID:           pay.BatchID,
 	}
 }
 
