@@ -10,15 +10,9 @@ function broadcastTenantId(tenantId: string) {
   window.dispatchEvent(new CustomEvent(TENANT_UPDATED_EVENT, { detail: { tenantId } }))
 }
 
-function readEnvTenant(): string {
-  if (typeof process === 'undefined') return ''
-  return process.env.NEXT_PUBLIC_ZORD_TENANT_ID?.trim() || ''
-}
-
 /**
- * Tenant id for `/api/prod/*` reads - no mock fallback.
- * Resolution: `NEXT_PUBLIC_ZORD_TENANT_ID` → `/api/auth/me` session → `localStorage.zord_tenant_id`.
- * Returns empty string until a real tenant is resolved (sign in or set env).
+ * Tenant id for display and client cache keys.
+ * Source is `/api/auth/me` only. Prod BFF injects tenant from the same session.
  */
 export function useSessionTenantId(): string {
   const { tenantId } = useSessionTenant()
@@ -32,22 +26,20 @@ export type UseSessionTenantResult = {
   /** Last manual or automatic fetch status message. */
   tenantStatus: string
   tenantFetching: boolean
-  /** Re-run auth/me (+ optional intelligence batch lookup). */
+  /** Re-run `/api/auth/me`. */
   refreshTenant: (options?: { batchId?: string }) => Promise<SessionTenantFetchResult>
 }
 
-/** Session tenant + settled flag after `/api/auth/me` (no mock fallback). */
 export function useSessionTenant(): UseSessionTenantResult {
-  const envTenant = readEnvTenant()
-  const [tenantId, setTenantId] = useState(() => envTenant)
+  const [tenantId, setTenantId] = useState('')
   const [tenantReady, setTenantReady] = useState(false)
   const [tenantStatus, setTenantStatus] = useState('')
   const [tenantFetching, setTenantFetching] = useState(false)
 
-  const refreshTenant = useCallback(async (options?: { batchId?: string }) => {
+  const refreshTenant = useCallback(async (_options?: { batchId?: string }) => {
     setTenantFetching(true)
     try {
-      const result = await fetchSessionTenantId(options)
+      const result = await fetchSessionTenantId()
       setTenantId(result.tenantId)
       setTenantStatus(result.message)
       setTenantReady(true)
@@ -79,7 +71,7 @@ export function useSessionTenant(): UseSessionTenantResult {
     return () => {
       cancelled = true
     }
-  }, [envTenant])
+  }, [])
 
   return { tenantId, tenantReady, tenantStatus, tenantFetching, refreshTenant }
 }

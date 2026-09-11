@@ -1103,9 +1103,6 @@ async function preparePage(page: Page, context: BrowserContext, prodMock: (page:
   await installPayoutSessionCookies(context)
   await installAuthRoutes(page)
   await prodMock(page)
-  await page.addInitScript((tid) => {
-    localStorage.setItem('zord_tenant_id', tid)
-  }, SESSION_TENANT)
   await page.goto(`${BASE_URL}/overview?demo=sandbox`)
   await expect(page.getByText('Financial control overview').first()).toBeVisible({
     timeout: 20_000,

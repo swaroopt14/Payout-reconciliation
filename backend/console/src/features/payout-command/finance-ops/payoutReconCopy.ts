@@ -41,6 +41,10 @@ export type PayoutReconDisplayRow = {
   tax?: number
   currency?: string
   exceptionType?: string | null
+  direction?: string
+  rail?: string
+  twoWay?: FinanceReconRow['two_way']
+  threeWay?: FinanceReconRow['three_way']
 }
 
 /** Official Razorpay payout status_details.reason catalogue. */
@@ -437,6 +441,10 @@ export function mapFinanceRowToPayoutRecon(row: FinanceReconRow): PayoutReconDis
     tax: row.tax,
     currency: row.currency || 'INR',
     exceptionType: row.exception_type ?? null,
+    direction: row.direction,
+    rail: row.rail,
+    twoWay: row.two_way,
+    threeWay: row.three_way,
     statusDetails: details
       ? {
           description: details.description,
@@ -473,6 +481,10 @@ export function mapPayoutResponseToReconRow(payout: FinancePayout): FinanceRecon
     purpose: payout.purpose,
     created_at: created,
     error_code: payout.status_reason,
+    direction: rec?.direction,
+    rail: rec?.rail || payout.mode,
+    two_way: rec?.two_way,
+    three_way: rec?.three_way,
   }
 }
 
@@ -491,6 +503,10 @@ export function mapPaymentResponseToReconRow(payment: FinancePayment): FinanceRe
     currency: payment.currency,
     created_at: created,
     payment_provider: payment.provider,
+    direction: rec?.direction,
+    rail: rec?.rail || payment.method,
+    two_way: rec?.two_way,
+    three_way: rec?.three_way,
   }
 }
 

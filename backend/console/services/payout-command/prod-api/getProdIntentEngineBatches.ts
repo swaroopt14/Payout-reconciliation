@@ -91,15 +91,11 @@ export type IntentEngineBatchesDetailResponse = {
 
 const BATCHES_PATH = '/api/prod/intents/batches'
 
-function batchesUrl(
-  tenantId: string | undefined,
-  extra?: Record<string, string | number | undefined>,
-) {
+function batchesUrl(extra?: Record<string, string | number | undefined>) {
   const params = new URLSearchParams()
-  const tid = tenantId?.trim()
-  if (tid) params.set('tenant_id', tid)
   if (extra) {
     for (const [k, v] of Object.entries(extra)) {
+      if (k === 'tenant_id') continue
       if (v !== undefined && v !== '') params.set(k, String(v))
     }
   }
@@ -110,34 +106,30 @@ function batchesUrl(
 export type IntentEngineBatchesFetchResult = ProdJsonGetResult<IntentEngineBatchesListResponse>
 
 /**
- * Sidebar list - BFF resolves `tenant_id` from session cookies when omitted.
- * Prefer this when the client hook has not yet resolved a tenant string.
+ * Sidebar list. BFF injects tenant from the signed-in session; client never sends tenant_id.
  */
 export async function getProdIntentEngineBatchesForSession(): Promise<IntentEngineBatchesFetchResult> {
-  return fetchProdJsonGetWithMeta<IntentEngineBatchesListResponse>(batchesUrl(undefined))
+  return fetchProdJsonGetWithMeta<IntentEngineBatchesListResponse>(batchesUrl())
 }
 
-/** Sidebar list with explicit tenant (must match session on BFF). */
-export async function getProdIntentEngineBatches(tenantId: string): Promise<IntentEngineBatchesFetchResult> {
-  const tid = tenantId.trim()
-  if (!tid) return getProdIntentEngineBatchesForSession()
-  return fetchProdJsonGetWithMeta<IntentEngineBatchesListResponse>(batchesUrl(tid))
+/** @deprecated Use getProdIntentEngineBatchesForSession — tenant is session-only. */
+export async function getProdIntentEngineBatches(_tenantId?: string): Promise<IntentEngineBatchesFetchResult> {
+  return getProdIntentEngineBatchesForSession()
 }
 
 /** Max rows per upstream request (intent-engine caps page_size at 200). */
 export const INTENT_ENGINE_BATCH_DETAIL_CHUNK = 200
 
-/** Batch drill-down - BFF session tenant when `tenantId` omitted. */
+/** Batch drill-down. BFF injects session tenant; client never sends tenant_id. */
 export async function getProdIntentEngineBatchDetail(
-  tenantId: string | undefined,
+  _tenantId: string | undefined,
   batchId: string,
   opts?: { page?: number; pageSize?: number },
 ): Promise<IntentEngineBatchesDetailResponse | null> {
   const bid = batchId.trim()
   if (!bid) return null
-  const tid = tenantId?.trim()
   return fetchProdJsonGet<IntentEngineBatchesDetailResponse>(
-    batchesUrl(tid || undefined, {
+    batchesUrl({
       batch_id: bid,
       page: opts?.page ?? 1,
       page_size: opts?.pageSize ?? INTENT_ENGINE_BATCH_DETAIL_CHUNK,

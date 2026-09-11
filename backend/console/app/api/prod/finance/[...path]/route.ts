@@ -64,6 +64,15 @@ async function proxy(request: NextRequest, segments: string[]): Promise<NextResp
     } catch {
       body = '{}'
     }
+    try {
+      const parsed = JSON.parse(body || '{}') as Record<string, unknown>
+      delete parsed.tenant_id
+      parsed.tenant_id = tenantId
+      if (!parsed.connector_id) parsed.connector_id = connectorId()
+      body = JSON.stringify(parsed)
+    } catch {
+      /* keep raw body */
+    }
   }
 
   try {

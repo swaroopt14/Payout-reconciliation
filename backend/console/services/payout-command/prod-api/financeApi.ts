@@ -26,6 +26,21 @@ export async function getFinanceCashPosition() {
   return fetchProdJsonGetWithMeta<FinanceCashPosition>(`${BASE}/cash-position`)
 }
 
+export async function getCashInstruments() {
+  return fetchProdJsonGetWithMeta<{
+    instruments: Array<{
+      rail: string
+      kind: string
+      direction: string
+      razorpay_ids: string[]
+      cash_in: boolean
+      cash_out: boolean
+    }>
+    psps: string[]
+    legs: { two_way: string; three_way: string }
+  }>('/api/prod/cash/instruments')
+}
+
 export async function getFinanceResults(result?: string) {
   const suffix = result && result !== 'ALL' ? `?result=${encodeURIComponent(result)}` : ''
   return fetchProdJsonGetWithMeta<{

@@ -1,6 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
 import {
   createFinanceInvestigation,
@@ -22,7 +23,6 @@ import {
 } from './razorpayChrome'
 import {
   isOpenReconResult,
-  isTerminalFailedStatus,
   mapFinanceRowToPayoutRecon,
   matchesStatusTab,
   reasonsForStatusTab,
@@ -40,6 +40,7 @@ import {
 import { PaymentProviderBadge } from './PaymentProviderBadge'
 import { PayoutLifecycleDrawer } from './PayoutLifecycleDrawer'
 import { reconToneClass } from './payoutLifecycleModel'
+import { ReconLegBadge } from './reconLegs'
 
 const RANGE_OPTIONS = [
   { value: 'today', label: 'Today' },
@@ -199,9 +200,29 @@ export function ReconciliationSurface() {
           docsHref="https://razorpay.com/docs/payments/payouts/"
         />
         <p className={`mt-1 ${RZ_MUTED}`}>
-          Provider status is Razorpay truth. Reconciliation is the control outcome. Click a payout for its
-          lifecycle, or open the full trace.
+          Router picks PSP and rail. This page is zord-recon on :8081. Close result is not bank cash — 3-way is.
         </p>
+        <div className={`${RZ_CARD} mt-4 grid gap-3 px-4 py-3 sm:grid-cols-5`}>
+          {[
+            ['1. Upload', '/payout-command-view/batch-command-center?upload=1', 'Settlement and bank files'],
+            ['2. Run', '', 'POST /v1/reconciliation/run'],
+            ['3. Results', '/reconciliation', 'Close + 2-way + 3-way'],
+            ['4. Cash', '/cash-position', 'Proven credits vs in-flight'],
+            ['5. Exceptions', '/exceptions', 'Gaps that still need a human'],
+          ].map(([label, href, note]) =>
+            href ? (
+              <Link key={label} href={href} className="min-w-0">
+                <p className="text-[12px] font-semibold text-[#1A1A1A]">{label}</p>
+                <p className={`mt-0.5 ${RZ_MUTED}`}>{note}</p>
+              </Link>
+            ) : (
+              <div key={label} className="min-w-0">
+                <p className="text-[12px] font-semibold text-[#1A1A1A]">{label}</p>
+                <p className={`mt-0.5 ${RZ_MUTED}`}>{note}</p>
+              </div>
+            ),
+          )}
+        </div>
 
         <div className="mt-5 space-y-3">
           <HeroAmountCard
@@ -215,7 +236,7 @@ export function ReconciliationSurface() {
               label="Processed"
               value={formatPaise(totals.matchedAmount, 2)}
               subtitle={`${totals.matchedCount.toLocaleString('en-IN')} processed`}
-              info="Status processed · money credited"
+              info="Razorpay processed status — not 3-way bank proof"
               onClick={() => setTab('processed')}
             />
             <MiniMetricCard
@@ -343,7 +364,9 @@ export function ReconciliationSurface() {
                       <th className="px-4 py-3 font-semibold">Payout ID</th>
                       <th className="px-4 py-3 font-semibold">Processor</th>
                       <th className="px-4 py-3 font-semibold">Provider</th>
-                      <th className="px-4 py-3 font-semibold">Reconciliation</th>
+                      <th className="px-4 py-3 font-semibold">Close</th>
+                      <th className="px-4 py-3 font-semibold">2-way</th>
+                      <th className="px-4 py-3 font-semibold">3-way</th>
                       <th className="px-4 py-3 text-right font-semibold">Amount</th>
                       <th className="px-4 py-3 font-semibold">UTR</th>
                       <th className="px-4 py-3 font-semibold">Reason</th>
@@ -353,7 +376,6 @@ export function ReconciliationSurface() {
                   </thead>
                   <tbody>
                     {displayRows.map((row) => {
-                      const open = isOpenReconResult(String(row.result)) || isTerminalFailedStatus(String(row.status))
                       const busy = reconcilingId === row.payoutId
                       const details = row.statusDetails
                       const selected = openId === row.payoutId
@@ -382,13 +404,19 @@ export function ReconciliationSurface() {
                             <span
                               className={`inline-flex h-6 items-center rounded-[4px] px-2 text-[11px] font-semibold ${reconToneClass(String(row.result))}`}
                             >
-                              {row.result}
+                              {row.result || '—'}
                             </span>
                             {Math.abs(row.varianceMinor) > 0 && String(row.result).toUpperCase() !== 'MATCHED' ? (
                               <p className={`mt-1 tabular-nums ${RZ_MUTED}`}>
                                 {formatPaise(Math.abs(row.varianceMinor), 2)}
                               </p>
                             ) : null}
+                          </td>
+                          <td className="px-4 py-3 align-top">
+                            <ReconLegBadge label="Books vs PSP" leg={row.twoWay} />
+                          </td>
+                          <td className="px-4 py-3 align-top">
+                            <ReconLegBadge label="Bank cash" leg={row.threeWay} />
                           </td>
                           <td className="px-4 py-3 align-top text-right font-medium tabular-nums text-[#1A1A1A]">
                             {formatPaise(row.amountMinor, 2)}
@@ -418,7 +446,7 @@ export function ReconciliationSurface() {
                               >
                                 Trace →
                               </button>
-                              {String(row.status).toLowerCase() === 'processed' && !open ? (
+                              {String(row.result).toUpperCase() === 'MATCHED' ? (
                                 <span className="text-[12px] font-medium text-[#15803D]">Reconciled</span>
                               ) : (
                                 <button

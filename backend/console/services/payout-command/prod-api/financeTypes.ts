@@ -74,6 +74,27 @@ export type FinanceCashSchedule = {
   limitations?: string[]
 }
 
+export type FinanceReconLeg = {
+  result: FinanceReconResult
+  reason: string
+  confidence?: number
+}
+
+/** Close/eval overlay from zord-recon. MATCHED here is not bank cash. */
+export type FinanceReconOverlay = {
+  result: FinanceReconResult
+  reason: string
+  expected_amount: number
+  observed_amount: number
+  variance_amount: number
+  confidence: number
+  bank_credit_proven?: boolean
+  direction?: string
+  rail?: string
+  two_way?: FinanceReconLeg
+  three_way?: FinanceReconLeg
+}
+
 export type FinanceObservation = {
   source: string
   provider_status: string
@@ -97,15 +118,7 @@ export type FinancePayment = {
   notes?: Record<string, string>
   sources?: string[]
   observations?: FinanceObservation[]
-  reconciliation?: {
-    result: FinanceReconResult
-    reason: string
-    expected_amount: number
-    observed_amount: number
-    variance_amount: number
-    confidence: number
-    bank_credit_proven?: boolean
-  } | null
+  reconciliation?: FinanceReconOverlay | null
   evidence_refs?: Record<string, unknown>
   financial_movement?: {
     payment: number | null
@@ -127,15 +140,7 @@ export type FinancePayout = {
   status_reason?: string
   provider_created_at?: string
   observations?: FinanceObservation[]
-  reconciliation?: {
-    result: FinanceReconResult
-    reason: string
-    expected_amount: number
-    observed_amount: number
-    variance_amount: number
-    confidence: number
-    bank_credit_proven?: boolean
-  } | null
+  reconciliation?: FinanceReconOverlay | null
   evidence_refs?: Record<string, unknown>
 }
 
@@ -303,6 +308,10 @@ export type FinanceReconRow = {
   payment_provider?: string
   /** Finance-control exception class. Not a Razorpay payout status. */
   exception_type?: string | null
+  direction?: string
+  rail?: string
+  two_way?: FinanceReconLeg
+  three_way?: FinanceReconLeg
 }
 
 export type FinanceEvaluation = {
@@ -345,14 +354,6 @@ export type FinanceEntityTimeline = {
   entity_id: string
   provider_status: string
   recon_run: boolean
-  reconciliation: {
-    result: FinanceReconResult
-    reason: string
-    expected_amount: number
-    observed_amount: number
-    variance_amount: number
-    confidence: number
-    bank_credit_proven?: boolean
-  } | null
+  reconciliation: FinanceReconOverlay | null
   steps: FinanceTimelineStep[]
 }

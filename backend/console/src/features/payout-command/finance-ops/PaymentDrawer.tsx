@@ -29,6 +29,7 @@ import {
 } from './razorpayChrome'
 import { payoutStatusTone, type RazorpayPayoutStatus } from './razorpayPayoutStatus'
 import { PaymentProviderBadge } from './PaymentProviderBadge'
+import { ReconLegBadge } from './reconLegs'
 
 function asPayoutStatus(status?: string | null): RazorpayPayoutStatus {
   const s = String(status || '').toLowerCase()
@@ -119,7 +120,7 @@ export function PaymentDrawer({
           else setPayout(second.data as FinancePayout)
         } else {
           setError(
-            first.status === 401 || second.status === 401
+            second.status === 401
               ? 'Sign in to load this payout.'
               : 'Could not load this payout.',
           )
@@ -281,9 +282,19 @@ export function PaymentDrawer({
               ) : null}
               <DrawerField label="Created at">{formatWhen(createdAt)}</DrawerField>
               {recon?.result ? (
-                <DrawerField label="Reconciliation">{reconLabel(recon.result)}</DrawerField>
+                <DrawerField label="Close result">{reconLabel(recon.result)}</DrawerField>
               ) : exception?.reconciliation_result ? (
-                <DrawerField label="Reconciliation">{reconLabel(exception.reconciliation_result)}</DrawerField>
+                <DrawerField label="Close result">{reconLabel(exception.reconciliation_result)}</DrawerField>
+              ) : null}
+              {recon?.two_way ? (
+                <DrawerField label="2-way">
+                  <ReconLegBadge label="Books vs PSP" leg={recon.two_way} />
+                </DrawerField>
+              ) : null}
+              {recon?.three_way ? (
+                <DrawerField label="3-way">
+                  <ReconLegBadge label="Bank cash" leg={recon.three_way} />
+                </DrawerField>
               ) : null}
             </dl>
 
