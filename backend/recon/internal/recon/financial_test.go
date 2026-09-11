@@ -479,3 +479,25 @@ func TestPAY_UnreportedPaymentFeeDoesNotInventMismatch(t *testing.T) {
 		t.Fatalf("result=%s reason=%s", got.Result, got.Reason)
 	}
 }
+
+func TestPAY_CurrencyMismatchIsVariance(t *testing.T) {
+	got := ReconcilePayment(FinancialInput{
+		Payment: PaymentFact{
+			PaymentID: "pay_fx", CanonicalStatus: PaymentCaptured, Captured: true,
+			AmountMinor: 10000, Currency: "USD",
+		},
+		Lines: []SettlementLine{{
+			ID: "sl_fx", PaymentID: "pay_fx", LineType: "payment",
+			AmountMinor: 10000, CreditMinor: 10000, Currency: "INR",
+		}},
+		Decisions: []SettlementBankDecision{{
+			ID: "d_fx", SettlementLineID: "sl_fx", BankObservationID: "b_fx",
+			State: BankMatchExact, Confidence: 0.99,
+			Evidence: map[string]any{"bank_credit_minor": int64(10000)},
+		}},
+		Banks: []BankTxn{{ID: "b_fx", CreditMinor: 10000, CreditDebit: "CREDIT", Currency: "INR"}},
+	})
+	if got.Result != ResultVariance || got.Reason != "currency_mismatch" {
+		t.Fatalf("result=%s reason=%s", got.Result, got.Reason)
+	}
+}

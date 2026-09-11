@@ -254,6 +254,10 @@ func reconcileCaptured(out FinancialResult, in FinancialInput, hasPaymentSettlem
 		}
 		return withException(out, ResultConflicted, "duplicate_settlement", 0.85)
 	}
+	if currencySidesConflict(in.Payment.Currency, settlementCurrencies(paymentLines), bankCurrencies(in.Banks)) {
+		out.ObservedAmount = settlementNet(in.Lines)
+		return withException(out, ResultVariance, "currency_mismatch", 0.95)
+	}
 	if gap, partial := partialSettlementGap(in.Payment.AmountMinor, paymentLines); partial {
 		out.ObservedAmount = settlementNet(in.Lines)
 		out.VarianceAmount = gap
@@ -467,6 +471,38 @@ func settlementNet(lines []SettlementLine) int64 {
 		}
 	}
 	return n
+}
+
+func settlementCurrencies(lines []SettlementLine) []string {
+	out := make([]string, 0, len(lines))
+	for _, l := range lines {
+		out = append(out, l.Currency)
+	}
+	return out
+}
+
+func bankCurrencies(banks []BankTxn) []string {
+	out := make([]string, 0, len(banks))
+	for _, b := range banks {
+		out = append(out, b.Currency)
+	}
+	return out
+}
+
+func currencySidesConflict(left string, groups ...[]string) bool {
+	a := strings.ToUpper(strings.TrimSpace(left))
+	if a == "" {
+		return false
+	}
+	for _, group := range groups {
+		for _, raw := range group {
+			b := strings.ToUpper(strings.TrimSpace(raw))
+			if b != "" && b != a {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func paymentSettlementFeeTaxGap(pay PaymentFact, paymentLines []SettlementLine) (int64, string, bool) {

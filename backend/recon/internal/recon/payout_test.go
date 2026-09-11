@@ -239,3 +239,18 @@ func TestPAYO_UTRMatchWrongAmountIsVariance(t *testing.T) {
 		t.Fatalf("3-way must not match: %+v", got.ThreeWay)
 	}
 }
+
+func TestPAYO_CurrencyMismatchIsVariance(t *testing.T) {
+	got := ReconcilePayout(PayoutInput{
+		Payout: PayoutFact{
+			PayoutID: "pout_fx", ProviderStatus: razorpay.PayoutProcessed,
+			AmountMinor: 25000, Currency: "USD", UTR: "UTRFX1",
+		},
+		Banks: []BankTxn{{
+			ID: "bdebit_fx", UTR: "UTRFX1", DebitMinor: 25000, CreditDebit: "DEBIT", Currency: "INR",
+		}},
+	})
+	if got.Result != ResultVariance || got.Reason != "currency_mismatch" {
+		t.Fatalf("result=%s reason=%s", got.Result, got.Reason)
+	}
+}
