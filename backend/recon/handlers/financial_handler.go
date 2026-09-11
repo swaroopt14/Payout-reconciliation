@@ -569,13 +569,24 @@ func firstRail(fromResult, raw string) string {
 }
 
 func (h *FinancialHandler) scope(c *gin.Context) (string, string, bool) {
-	tenantID := strings.TrimSpace(c.Query("tenant_id"))
+	queryTenant := strings.TrimSpace(c.Query("tenant_id"))
 	connectorID := strings.TrimSpace(c.Query("connector_id"))
-	if tenantID == "" || connectorID == "" {
+	if connectorID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "tenant_id and connector_id are required"})
 		return "", "", false
 	}
-	return tenantID, connectorID, true
+	if principalTenant, ok := auth.PrincipalTenant(c); ok {
+		if queryTenant != "" && !strings.EqualFold(queryTenant, principalTenant) {
+			c.JSON(http.StatusForbidden, gin.H{"error": "requested tenant is not authorised for this principal"})
+			return "", "", false
+		}
+		return principalTenant, connectorID, true
+	}
+	if queryTenant == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "tenant_id and connector_id are required"})
+		return "", "", false
+	}
+	return queryTenant, connectorID, true
 }
 
 func observationJSON(events []recon.ObservationFact) []gin.H {
