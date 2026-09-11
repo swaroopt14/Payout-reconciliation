@@ -47,6 +47,9 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - RUST_LOG=info
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      - JWT_SIGNING_SECRET=${JWT_SIGNING_SECRET:-}
+      - JWT_ISSUER=${JWT_ISSUER:-zord-edge}
+      - ROUTER_AUTH_TOKEN=${ROUTER_AUTH_TOKEN:-}
     depends_on:
       postgres:
         condition: service_healthy

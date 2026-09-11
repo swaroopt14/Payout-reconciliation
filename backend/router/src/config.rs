@@ -12,6 +12,9 @@ pub struct Config {
     pub circuit_error_rate: f64,
     pub circuit_reset: Duration,
     pub otel_endpoint: Option<String>,
+    pub jwt_signing_secret: Option<String>,
+    pub jwt_issuer: String,
+    pub router_auth_token: Option<String>,
 }
 
 impl Config {
@@ -27,6 +30,9 @@ impl Config {
             circuit_error_rate: parse_f64("CIRCUIT_ERROR_RATE", 0.10),
             circuit_reset: Duration::from_secs(parse_u64("CIRCUIT_RESET_SECS", 30)),
             otel_endpoint: nonempty("OTEL_EXPORTER_OTLP_ENDPOINT"),
+            jwt_signing_secret: nonempty("JWT_SIGNING_SECRET"),
+            jwt_issuer: nonempty("JWT_ISSUER").unwrap_or_else(|| "zord-edge".into()),
+            router_auth_token: nonempty("ROUTER_AUTH_TOKEN"),
         }
     }
 }
