@@ -9,15 +9,17 @@ import {
   SLASH_COMMANDS,
   type AskReply,
 } from '@/services/payout-command/demo/askZordDemo'
+import { isDemoQuery, isDemoSession } from '@/services/payout-command/demo/ycDemoConstants'
 
 type Turn = { id: string; role: 'user' | 'assistant'; text?: string; reply?: AskReply }
 
 /**
- * Floating Ask Zord chat — available on every finance console page.
- * Mock answers from resolveAskZordDemo (settlement / variance / cash / proof scenarios).
+ * Scripted Ask Zord answers stay on demo/sandbox only.
+ * Live finance routes must not show fixture numbers from this launcher.
  */
 export function FloatingAskZordChat() {
   const pathname = usePathname()
+  const [demoOnly, setDemoOnly] = useState(false)
   const [open, setOpen] = useState(false)
   const [input, setInput] = useState('')
   const [turns, setTurns] = useState<Turn[]>([])
@@ -26,6 +28,11 @@ export function FloatingAskZordChat() {
 
   // Hide launcher on the full Ask Zord page (already has the main chat)
   const hideLauncher = pathname?.startsWith('/ask')
+
+  useEffect(() => {
+    const demoParam = new URLSearchParams(window.location.search).get('demo')
+    setDemoOnly(isDemoSession() || isDemoQuery(demoParam))
+  }, [pathname])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -55,7 +62,7 @@ export function FloatingAskZordChat() {
     return () => timers.forEach((t) => window.clearTimeout(t))
   }, [thinking])
 
-  if (hideLauncher) return null
+  if (hideLauncher || !demoOnly) return null
 
   return (
     <>
