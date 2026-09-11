@@ -264,6 +264,20 @@ func reconcileCaptured(out FinancialResult, in FinancialInput, hasPaymentSettlem
 		}
 		return withException(out, ResultVariance, "partial_settlement", 0.88)
 	}
+	if gap, reason, ok := paymentSettlementFeeTaxGap(in.Payment, paymentLines); ok {
+		out.ObservedAmount = settlementNet(in.Lines)
+		out.VarianceAmount = gap
+		if exact != nil {
+			attachDecision(&out, *exact)
+			out.BankCreditProven = true
+			if v, ok := evidenceInt64(exact.Evidence, "bank_credit_minor"); ok {
+				out.ObservedAmount = v
+			}
+		} else if high != nil {
+			attachDecision(&out, *high)
+		}
+		return withException(out, ResultVariance, reason, 0.9)
+	}
 	if conflicted != nil {
 		out.CandidateIDs = append([]string{}, conflicted.Candidates...)
 		attachDecision(&out, *conflicted)
@@ -451,6 +465,29 @@ func settlementNet(lines []SettlementLine) int64 {
 		}
 	}
 	return n
+}
+
+func paymentSettlementFeeTaxGap(pay PaymentFact, paymentLines []SettlementLine) (int64, string, bool) {
+	var sFee, sTax int64
+	for _, l := range paymentLines {
+		sFee += l.FeeMinor
+		sTax += l.TaxMinor
+	}
+	if pay.FeeMinor != 0 && pay.FeeMinor != sFee {
+		gap := pay.FeeMinor - sFee
+		if gap < 0 {
+			gap = -gap
+		}
+		return gap, "fee_mismatch", true
+	}
+	if pay.TaxMinor != 0 && pay.TaxMinor != sTax {
+		gap := pay.TaxMinor - sTax
+		if gap < 0 {
+			gap = -gap
+		}
+		return gap, "tax_mismatch", true
+	}
+	return 0, "", false
 }
 
 func feeTaxDeduction(lines []SettlementLine) int64 {
