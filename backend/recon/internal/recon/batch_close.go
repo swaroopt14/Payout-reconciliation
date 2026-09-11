@@ -26,7 +26,7 @@ func BatchCloseFromResults(batchID, runID string, results []FinancialResult, req
 	}
 	found := map[string]struct{}{}
 	for _, r := range results {
-		if r.EntityType != EntityPayout {
+		if r.EntityType != EntityPayout && r.EntityType != EntityPayment {
 			continue
 		}
 		found[r.EntityID] = struct{}{}

@@ -107,10 +107,8 @@ func (s *FinancialService) Run(ctx context.Context, req FinancialRunRequest) (Re
 	}
 
 	wantPayout := payoutIDSet(req.PayoutIDs)
-	scoped := len(wantPayout) > 0
-	if scoped {
-		pays = nil
-	}
+	scoped := len(wantPayout) > 0 || strings.TrimSpace(req.BatchID) != ""
+	pays = scopePayments(pays, req.BatchID)
 
 	linesByPay := indexSettlementByPayment(lines)
 	lineByID := map[string]SettlementLine{}
@@ -163,15 +161,7 @@ func (s *FinancialService) Run(ctx context.Context, req FinancialRunRequest) (Re
 	if err != nil {
 		return run, nil, err
 	}
-	if scoped {
-		filtered := make([]PayoutFact, 0, len(wantPayout))
-		for _, po := range payouts {
-			if _, ok := wantPayout[po.PayoutID]; ok {
-				filtered = append(filtered, po)
-			}
-		}
-		payouts = filtered
-	}
+	payouts = scopePayouts(payouts, req.BatchID, wantPayout)
 	for _, po := range payouts {
 		events, err := s.Store.ListPayoutObservationFacts(ctx, req.TenantID, req.ConnectorID, po.PayoutID)
 		if err != nil {
@@ -792,6 +782,39 @@ func applySharedBankAmbiguity(results []FinancialResult) []FinancialResult {
 
 func normalizeUTR(s string) string {
 	return strings.ToUpper(strings.TrimSpace(s))
+}
+
+func scopePayments(pays []PaymentFact, batchID string) []PaymentFact {
+	batchID = strings.TrimSpace(batchID)
+	if batchID == "" {
+		return pays
+	}
+	out := make([]PaymentFact, 0, len(pays))
+	for _, p := range pays {
+		if strings.EqualFold(strings.TrimSpace(p.BatchID), batchID) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func scopePayouts(payouts []PayoutFact, batchID string, want map[string]struct{}) []PayoutFact {
+	batchID = strings.TrimSpace(batchID)
+	if len(want) == 0 && batchID == "" {
+		return payouts
+	}
+	out := make([]PayoutFact, 0, len(payouts))
+	for _, po := range payouts {
+		if len(want) > 0 {
+			if _, ok := want[po.PayoutID]; !ok {
+				continue
+			}
+		} else if !strings.EqualFold(strings.TrimSpace(po.BatchID), batchID) {
+			continue
+		}
+		out = append(out, po)
+	}
+	return out
 }
 
 func payoutIDSet(ids []string) map[string]struct{} {

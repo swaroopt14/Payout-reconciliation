@@ -136,7 +136,7 @@ func TestFinancialRunIncludesPayoutsAndEmitsDecision(t *testing.T) {
 	}
 }
 
-func TestFinancialRunScopedToPayoutIDsSkipsPayments(t *testing.T) {
+func TestFinancialRunPayoutIDsDoNotDropUnbatchedPayments(t *testing.T) {
 	store := NewMemoryFinancialStore()
 	store.Payments = []PaymentFact{{
 		PaymentID: "pay_keep", CanonicalStatus: PaymentCaptured, ProviderStatus: "captured",
@@ -167,6 +167,52 @@ func TestFinancialRunScopedToPayoutIDsSkipsPayments(t *testing.T) {
 	got, ok, err := svc.BatchClose(context.Background(), "11111111-1111-1111-1111-111111111111", "c", "BATCH-001")
 	if err != nil || !ok || got.RunID != run.ID {
 		t.Fatalf("close=%+v ok=%v err=%v", got, ok, err)
+	}
+}
+
+func TestFinancialRunBatchIDScopesPaymentsAndPayouts(t *testing.T) {
+	store := NewMemoryFinancialStore()
+	store.Payments = []PaymentFact{
+		{
+			PaymentID: "pay_in", CanonicalStatus: PaymentCaptured, ProviderStatus: "captured",
+			Captured: true, AmountMinor: 10000, Currency: "INR", BatchID: "BATCH-IN",
+		},
+		{
+			PaymentID: "pay_out", CanonicalStatus: PaymentCaptured, ProviderStatus: "captured",
+			Captured: true, AmountMinor: 20000, Currency: "INR", BatchID: "BATCH-OTHER",
+		},
+	}
+	store.Payouts = []PayoutFact{
+		{PayoutID: "pout_in", ProviderStatus: razorpay.PayoutFailed, AmountMinor: 1, BatchID: "BATCH-IN"},
+		{PayoutID: "pout_out", ProviderStatus: razorpay.PayoutFailed, AmountMinor: 2, BatchID: "BATCH-OTHER"},
+	}
+	svc := NewFinancialService(store)
+	_, results, err := svc.Run(context.Background(), FinancialRunRequest{
+		TenantID: "11111111-1111-1111-1111-111111111111", ConnectorID: "c",
+		BatchID: "BATCH-IN",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("results=%d %+v", len(results), results)
+	}
+	seen := map[string]string{}
+	for _, r := range results {
+		seen[r.EntityID] = r.EntityType
+	}
+	if seen["pay_in"] != EntityPayment || seen["pout_in"] != EntityPayout {
+		t.Fatalf("scoped set=%+v", seen)
+	}
+	if _, ok := seen["pay_out"]; ok {
+		t.Fatal("other-batch payment must not be scored")
+	}
+	if _, ok := seen["pout_out"]; ok {
+		t.Fatal("other-batch payout must not be scored")
+	}
+	closeDoc := BatchCloseFromResults("BATCH-IN", "run_1", results, 2)
+	if closeDoc.Records != 2 {
+		t.Fatalf("batch close records=%d", closeDoc.Records)
 	}
 }
 
