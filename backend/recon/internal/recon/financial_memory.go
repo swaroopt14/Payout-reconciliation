@@ -2,6 +2,7 @@ package recon
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"time"
 
@@ -25,6 +26,7 @@ type MemoryFinancialStore struct {
 	Investigations []InvestigationRecord
 	Outbox         []models.OutboxRow
 	Refunds        []RefundFact
+	heldRuns       map[string]struct{}
 }
 
 func NewMemoryFinancialStore() *MemoryFinancialStore {
@@ -84,6 +86,25 @@ func (m *MemoryFinancialStore) ListBankTxns(_ context.Context, _, _, accountID s
 
 func (m *MemoryFinancialStore) ListSettlementBankDecisions(context.Context, string, string) ([]SettlementBankDecision, error) {
 	return append([]SettlementBankDecision{}, m.Decisions...), nil
+}
+
+func (m *MemoryFinancialStore) TryLockTenantRun(_ context.Context, tenantID, connectorID string) (func(), error) {
+	key := strings.ToLower(strings.TrimSpace(tenantID)) + "|" + strings.ToLower(strings.TrimSpace(connectorID))
+	m.mu.Lock()
+	if m.heldRuns == nil {
+		m.heldRuns = map[string]struct{}{}
+	}
+	if _, taken := m.heldRuns[key]; taken {
+		m.mu.Unlock()
+		return nil, ErrRunInProgress
+	}
+	m.heldRuns[key] = struct{}{}
+	m.mu.Unlock()
+	return func() {
+		m.mu.Lock()
+		delete(m.heldRuns, key)
+		m.mu.Unlock()
+	}, nil
 }
 
 func (m *MemoryFinancialStore) InsertReconciliationRun(_ context.Context, run ReconciliationRun) (ReconciliationRun, error) {

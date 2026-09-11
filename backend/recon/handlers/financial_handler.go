@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 
@@ -66,6 +67,10 @@ func (h *FinancialHandler) run(c *gin.Context, body reconRunBody, _ bool) {
 		BatchID: body.BatchID, PayoutIDs: body.PayoutIDs,
 	})
 	if err != nil {
+		if errors.Is(err, recon.ErrRunInProgress) {
+			c.JSON(http.StatusConflict, gin.H{"error": "reconciliation already running"})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}

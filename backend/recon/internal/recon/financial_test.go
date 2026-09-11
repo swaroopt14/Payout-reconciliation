@@ -3,6 +3,7 @@ package recon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -387,5 +388,26 @@ func TestFinanceSummaryCopiesExceptionExposure(t *testing.T) {
 	}
 	if len(sum.ExposureByReason) == 0 || sum.ExposureByReason[0].Reason != "amount_mismatch" || sum.ExposureByReason[0].ExposureMinor != 32500 {
 		t.Fatalf("reasons=%+v", sum.ExposureByReason)
+	}
+}
+
+func TestRunRejectsConcurrentTenantLock(t *testing.T) {
+	store := NewMemoryFinancialStore()
+	svc := NewFinancialService(store)
+	unlock, err := store.TryLockTenantRun(context.Background(), "t", "c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = svc.Run(context.Background(), FinancialRunRequest{TenantID: "t", ConnectorID: "c"})
+	if !errors.Is(err, ErrRunInProgress) {
+		t.Fatalf("err=%v", err)
+	}
+	unlock()
+	run, _, err := svc.Run(context.Background(), FinancialRunRequest{TenantID: "t", ConnectorID: "c"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != "completed" {
+		t.Fatalf("status=%s", run.Status)
 	}
 }
