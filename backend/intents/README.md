@@ -1,13 +1,13 @@
-# Zord Intent Engine Microservice
+# Intent Engine Microservice
 
-A high-performance intent processing and validation service for the Zord platform, built with Go and designed for real-time financial transaction processing with comprehensive validation and canonicalization.
+A high-performance intent processing and validation service for the platform, built with Go and designed for real-time financial transaction processing with comprehensive validation and canonicalization.
 
 ## 🚀 **Current Deployment Status**
 
 ✅ **Service Successfully Deployed & Running**
-- **Container**: `zord-intent-engine-service` - Running and healthy
-- **Database**: `zord-intent-postgres` - Running on port 5436
-- **Network**: `zord-intent-engine_zord-network` - Active
+- **Container**: `intent-engine` - Running and healthy
+- **Database**: `intent-postgres` - Running on port 5436
+- **Network**: `compose network` - Active
 - **Health Check**: Responding at `http://localhost:8083/health`
 - **Redis Integration**: Connected to Redis message queues
 - **OpenTelemetry**: Distributed tracing enabled
@@ -15,9 +15,9 @@ A high-performance intent processing and validation service for the Zord platfor
 ### Current Service Status
 ```bash
 # Check running services
-docker ps | grep zord-intent
-# zord-intent-engine-service - Up and healthy
-# zord-intent-postgres - Up and running
+docker ps | grep intent
+# intent-engine - Up and healthy
+# intent-postgres - Up and running
 
 # Test health endpoint
 curl http://localhost:8083/health
@@ -26,7 +26,7 @@ curl http://localhost:8083/health
 
 ## Overview
 
-The Zord Intent Engine service handles intent validation, canonicalization, and processing for financial transactions. It runs on port `8083` and integrates with PostgreSQL for data persistence, Redis for message processing, and provides comprehensive business rule validation with idempotency guarantees.
+The Intent Engine service handles intent validation, canonicalization, and processing for financial transactions. It runs on port `8083` and integrates with PostgreSQL for data persistence, Redis for message processing, and provides comprehensive business rule validation with idempotency guarantees.
 
 ## Features
 
@@ -70,7 +70,7 @@ go mod download
 cp .env.example .env
 
 # Initialize database
-psql -U intent_user -d zord_intent_engine_db < db/migration.sql
+psql -U intent_user -d intent_engine_db < db/migration.sql
 
 # Run the application
 go run ./cmd/main.go
@@ -89,10 +89,10 @@ docker-compose up --build
 docker-compose up -d --build
 
 # View logs
-docker-compose logs -f zord-intent-engine
+docker-compose logs -f intent-engine
 
 # Check status
-docker ps | grep zord-intent
+docker ps | grep intent
 
 # Stop services
 docker-compose down
@@ -101,7 +101,7 @@ docker-compose down
 #### Current Service Status
 ```bash
 # Check running containers
-docker ps | grep zord-intent-engine-service
+docker ps | grep intent-engine
 # Should show: Up X minutes (healthy)
 
 # Test health endpoint
@@ -109,7 +109,7 @@ curl http://localhost:8083/health
 # Should return: 200 OK
 
 # Check database connection
-docker-compose exec zord-intent-postgres pg_isready
+docker-compose exec intent-postgres pg_isready
 # Should return: accepting connections
 ```
 
@@ -143,11 +143,11 @@ docker-compose down -v
 curl http://localhost:8083/health
 
 # Test with Docker network
-docker-compose exec zord-intent-engine-service wget -qO- http://localhost:8083/health
+docker-compose exec intent-engine wget -qO- http://localhost:8083/health
 
 # Check Redis message processing
-docker exec zord-intent-redis redis-cli LLEN Intent_Processing
-docker exec zord-intent-redis redis-cli LLEN Intent_Validated
+docker exec intent-redis redis-cli LLEN Intent_Processing
+docker exec intent-redis redis-cli LLEN Intent_Validated
 ```
 
 ## Configuration ✅ **Currently Applied**
@@ -159,12 +159,12 @@ DB_HOST=postgres
 DB_PORT=5432
 DB_USER=intent_user
 DB_PASSWORD=intent_password
-DB_NAME=zord_intent_engine_db
+DB_NAME=intent_engine_db
 
 # Service Configuration (Active)
 ENVIRONMENT=production
 SERVICE_PORT=8083
-EXTERNAL_PORT=8083  # Mapped to localhost:8083
+EXTERNAL_PORT=8083 # Mapped to localhost:8083
 
 # Redis Configuration (Active)
 REDIS_HOST=redis
@@ -185,46 +185,46 @@ JAEGER_ENDPOINT=http://jaeger:14268/api/traces
 ### Accessing Current Configuration
 ```bash
 # View current environment variables
-docker-compose exec zord-intent-engine-service env | grep -E "(DB_|REDIS_|OTEL_)"
+docker-compose exec intent-engine env | grep -E "(DB_|REDIS_|OTEL_)"
 
 # Check mounted volumes
-docker inspect zord-intent-engine-service | grep -A 10 "Mounts"
+docker inspect intent-engine | grep -A 10 "Mounts"
 
 # Check Redis connectivity
-docker-compose exec zord-intent-engine-service redis-cli -h redis ping
+docker-compose exec intent-engine redis-cli -h redis ping
 ```
 
 ## Project Structure
 
 ```
-/cmd              # Entry point and main application
-/config           # Configuration and environment setup
-/db               # Database connection and migrations
+/cmd # Entry point and main application
+/config # Configuration and environment setup
+/db # Database connection and migrations
 /internal/
-  ├── canonicalizer/      # Intent canonicalization logic
-  ├── fetcher/           # Data fetching and retrieval
-  ├── guards/            # Pre-processing guards and checks
-  ├── handlers/          # HTTP request handlers (DLQ management)
-  ├── idempotency/       # Idempotency checking and management
-  ├── models/            # Data models and structures
-  ├── persistence/       # Database repositories
-  ├── pii/              # PII tokenization integration
-  ├── services/         # Business logic and processing services
-  ├── validator/        # Schema and business rule validation
-  └── worker/           # Background processing workers
+ ├── canonicalizer/ # Intent canonicalization logic
+ ├── fetcher/ # Data fetching and retrieval
+ ├── guards/ # Pre-processing guards and checks
+ ├── handlers/ # HTTP request handlers (DLQ management)
+ ├── idempotency/ # Idempotency checking and management
+ ├── models/ # Data models and structures
+ ├── persistence/ # Database repositories
+ ├── pii/ # PII tokenization integration
+ ├── services/ # Business logic and processing services
+ ├── validator/ # Schema and business rule validation
+ └── worker/ # Background processing workers
 /pkg/
-  └── hash/             # Hashing utilities for idempotency
+ └── hash/ # Hashing utilities for idempotency
 ```
 
 ## Message Processing Architecture
 
 ### Redis Queue Integration
 ```
-zord-vault-journal → Redis (Intent_Processing) → zord-intent-engine → Validation & Canonicalization
-                                                        ↓
-                                              Redis (Intent_Validated) → Downstream Services
-                                                        ↓
-                                              Redis (Intent_DLQ) ← Failed Messages
+vault-journal → Redis (Intent_Processing) → intent-engine → Validation & Canonicalization
+ ↓
+ Redis (Intent_Validated) → Downstream Services
+ ↓
+ Redis (Intent_DLQ) ← Failed Messages
 ```
 
 ### Processing Flow
@@ -240,31 +240,31 @@ zord-vault-journal → Redis (Intent_Processing) → zord-intent-engine → Vali
 ```go
 // Incoming intent from Redis
 type IncomingIntent struct {
-    TenantID       string                 `json:"tenant_id"`
-    TraceID        string                 `json:"trace_id"`
-    IntentType     string                 `json:"intent_type"`
-    RawPayload     map[string]interface{} `json:"raw_payload"`
-    IdempotencyKey string                 `json:"idempotency_key"`
-    ReceivedAt     time.Time              `json:"received_at"`
+ TenantID string `json:"tenant_id"`
+ TraceID string `json:"trace_id"`
+ IntentType string `json:"intent_type"`
+ RawPayload map[string]interface{} `json:"raw_payload"`
+ IdempotencyKey string `json:"idempotency_key"`
+ ReceivedAt time.Time `json:"received_at"`
 }
 
 // Canonical intent output
 type CanonicalIntent struct {
-    ID             string                 `json:"id"`
-    TenantID       string                 `json:"tenant_id"`
-    IntentType     string                 `json:"intent_type"`
-    CanonicalData  map[string]interface{} `json:"canonical_data"`
-    ValidationHash string                 `json:"validation_hash"`
-    ProcessedAt    time.Time              `json:"processed_at"`
+ ID string `json:"id"`
+ TenantID string `json:"tenant_id"`
+ IntentType string `json:"intent_type"`
+ CanonicalData map[string]interface{} `json:"canonical_data"`
+ ValidationHash string `json:"validation_hash"`
+ ProcessedAt time.Time `json:"processed_at"`
 }
 
 // DLQ entry for failed processing
 type DLQEntry struct {
-    ID           string    `json:"id"`
-    OriginalData string    `json:"original_data"`
-    ErrorReason  string    `json:"error_reason"`
-    RetryCount   int       `json:"retry_count"`
-    CreatedAt    time.Time `json:"created_at"`
+ ID string `json:"id"`
+ OriginalData string `json:"original_data"`
+ ErrorReason string `json:"error_reason"`
+ RetryCount int `json:"retry_count"`
+ CreatedAt time.Time `json:"created_at"`
 }
 ```
 
@@ -285,16 +285,16 @@ The application automatically creates required tables on startup:
 cat db/migration.sql
 
 # Run migrations manually
-psql -U intent_user -d zord_intent_engine_db < db/migration.sql
+psql -U intent_user -d intent_engine_db < db/migration.sql
 ```
 
 ### Accessing Database ✅ **Currently Available**
 ```bash
 # Connect to running PostgreSQL container
-docker-compose exec postgres psql -U intent_user -d zord_intent_engine_db
+docker-compose exec postgres psql -U intent_user -d intent_engine_db
 
 # Alternative connection (external port)
-psql -h localhost -p 5436 -U intent_user -d zord_intent_engine_db
+psql -h localhost -p 5436 -U intent_user -d intent_engine_db
 
 # Check database status
 docker-compose exec postgres pg_isready -U intent_user
@@ -321,11 +321,11 @@ docker-compose logs postgres
 ```go
 // Example validation rules
 type ValidationRules struct {
-    MaxAmount      decimal.Decimal `json:"max_amount"`
-    MinAmount      decimal.Decimal `json:"min_amount"`
-    AllowedCurrencies []string     `json:"allowed_currencies"`
-    RequiredFields    []string     `json:"required_fields"`
-    TenantRules       map[string]interface{} `json:"tenant_rules"`
+ MaxAmount decimal.Decimal `json:"max_amount"`
+ MinAmount decimal.Decimal `json:"min_amount"`
+ AllowedCurrencies []string `json:"allowed_currencies"`
+ RequiredFields []string `json:"required_fields"`
+ TenantRules map[string]interface{} `json:"tenant_rules"`
 }
 ```
 
@@ -340,13 +340,13 @@ type ValidationRules struct {
 ### Canonical Schema
 ```go
 type CanonicalPayoutIntent struct {
-    IntentID    string          `json:"intent_id"`
-    TenantID    string          `json:"tenant_id"`
-    Amount      decimal.Decimal `json:"amount"`
-    Currency    string          `json:"currency"`
-    Recipient   Recipient       `json:"recipient"`
-    Metadata    map[string]interface{} `json:"metadata"`
-    CreatedAt   time.Time       `json:"created_at"`
+ IntentID string `json:"intent_id"`
+ TenantID string `json:"tenant_id"`
+ Amount decimal.Decimal `json:"amount"`
+ Currency string `json:"currency"`
+ Recipient Recipient `json:"recipient"`
+ Metadata map[string]interface{} `json:"metadata"`
+ CreatedAt time.Time `json:"created_at"`
 }
 ```
 
@@ -361,13 +361,13 @@ type CanonicalPayoutIntent struct {
 ### Implementation
 ```go
 type IdempotencyRecord struct {
-    ID           string    `json:"id"`
-    TenantID     string    `json:"tenant_id"`
-    Hash         string    `json:"hash"`
-    Status       string    `json:"status"` // pending, processed, failed
-    ResultData   string    `json:"result_data"`
-    CreatedAt    time.Time `json:"created_at"`
-    ExpiresAt    time.Time `json:"expires_at"`
+ ID string `json:"id"`
+ TenantID string `json:"tenant_id"`
+ Hash string `json:"hash"`
+ Status string `json:"status"` // pending, processed, failed
+ ResultData string `json:"result_data"`
+ CreatedAt time.Time `json:"created_at"`
+ ExpiresAt time.Time `json:"expires_at"`
 }
 ```
 
@@ -376,7 +376,7 @@ type IdempotencyRecord struct {
 ### Building
 ```bash
 # Local build
-go build -o zord-intent-engine ./cmd/main.go
+go build -o intent-engine ./cmd/main.go
 
 # Docker build
 docker-compose build --no-cache
@@ -415,10 +415,10 @@ gosec ./...
 - **Health checks**: Built-in health monitoring
 
 ### docker-compose.yml
-- **Service**: Zord Intent Engine application (port 8083)
+- **Service**: Intent Engine application (port 8083)
 - **Database**: PostgreSQL with persistent volume
 - **Redis**: Message queue integration
-- **Network**: Isolated `zord-network` for service communication
+- **Network**: Isolated `compose-network` for service communication
 - **Health checks**: Automatic service monitoring
 - **OpenTelemetry**: Tracing configuration
 
@@ -429,28 +429,28 @@ gosec ./...
 #### Redis Connection Issues
 ```bash
 # Check Redis connectivity
-docker exec zord-intent-redis redis-cli ping
+docker exec intent-redis redis-cli ping
 # Should return: PONG
 
 # Check if service can reach Redis
-docker-compose exec zord-intent-engine-service ping redis
+docker-compose exec intent-engine ping redis
 
 # Monitor Redis queues
-docker exec zord-intent-redis redis-cli MONITOR
+docker exec intent-redis redis-cli MONITOR
 ```
 
 #### Message Processing Issues
 ```bash
 # Check queue lengths
-docker exec zord-intent-redis redis-cli LLEN Intent_Processing
-docker exec zord-intent-redis redis-cli LLEN Intent_Validated
-docker exec zord-intent-redis redis-cli LLEN Intent_DLQ
+docker exec intent-redis redis-cli LLEN Intent_Processing
+docker exec intent-redis redis-cli LLEN Intent_Validated
+docker exec intent-redis redis-cli LLEN Intent_DLQ
 
 # View messages in queue (without removing)
-docker exec zord-intent-redis redis-cli LRANGE Intent_Processing 0 -1
+docker exec intent-redis redis-cli LRANGE Intent_Processing 0 -1
 
 # Check service logs for processing errors
-docker logs zord-intent-engine-service --tail 50
+docker logs intent-engine --tail 50
 ```
 
 #### Database Connection Errors
@@ -459,22 +459,22 @@ docker logs zord-intent-engine-service --tail 50
 docker-compose logs postgres
 
 # Verify credentials and connection
-docker-compose exec zord-intent-engine-service env | grep DB_
+docker-compose exec intent-engine env | grep DB_
 
 # Test database connection
-docker-compose exec postgres psql -U intent_user -d zord_intent_engine_db -c "SELECT version();"
+docker-compose exec postgres psql -U intent_user -d intent_engine_db -c "SELECT version();"
 ```
 
 #### Validation Failures
 ```bash
 # Check validation logs
-docker logs zord-intent-engine-service | grep -i validation
+docker logs intent-engine | grep -i validation
 
 # View DLQ entries
-docker-compose exec postgres psql -U intent_user -d zord_intent_engine_db -c "SELECT * FROM dlq_entries ORDER BY created_at DESC LIMIT 10;"
+docker-compose exec postgres psql -U intent_user -d intent_engine_db -c "SELECT * FROM dlq_entries ORDER BY created_at DESC LIMIT 10;"
 
 # Check validation rules configuration
-docker-compose exec zord-intent-engine-service env | grep -i validation
+docker-compose exec intent-engine env | grep -i validation
 ```
 
 #### Port Already in Use
@@ -527,52 +527,52 @@ docker-compose up
 curl http://localhost:8083/health
 
 # Container health
-docker inspect zord-intent-engine-service | grep -A 5 "Health"
+docker inspect intent-engine | grep -A 5 "Health"
 
 # Resource usage
-docker stats zord-intent-engine-service
+docker stats intent-engine
 ```
 
 ## Integration ✅ **Active Connections**
 
 This service integrates with:
-- **zord-vault-journal**: ✅ Receives intents via Redis `Intent_Processing` queue
+- **vault-journal**: ✅ Receives intents via Redis `Intent_Processing` queue
 - **Redis Message Queues**: ✅ Connected to Redis on port 6379
-  - Consumes from: `Intent_Processing` queue
-  - Publishes to: `Intent_Validated` queue
-  - DLQ: `Intent_DLQ` queue for failed messages
+ - Consumes from: `Intent_Processing` queue
+ - Publishes to: `Intent_Validated` queue
+ - DLQ: `Intent_DLQ` queue for failed messages
 - **PostgreSQL**: ✅ Connected and running (internal port 5432, external 5436)
-  - Tables: `canonical_intents`, `dlq_entries`, `idempotency_records`
+ - Tables: `canonical_intents`, `dlq_entries`, `idempotency_records`
 - **OpenTelemetry Collector**: ✅ Sending traces to OTEL collector
 - **Jaeger**: ✅ Distributed tracing visualization
-- **Docker Network**: ✅ Connected to `zord-intent-engine_zord-network`
+- **Docker Network**: ✅ Connected to `compose network`
 
 ### Current Service Mesh
 ```
-zord-vault-journal → Redis (Intent_Processing) → zord-intent-engine (8083)
-                                                        ↓
-                                              Validation & Canonicalization
-                                                        ↓
-                                              Redis (Intent_Validated) → Downstream Services
-                                                        ↓
-                                              PostgreSQL (Persistence)
+vault-journal → Redis (Intent_Processing) → intent-engine (8083)
+ ↓
+ Validation & Canonicalization
+ ↓
+ Redis (Intent_Validated) → Downstream Services
+ ↓
+ PostgreSQL (Persistence)
 ```
 
 ### Message Flow Monitoring
 ```bash
 # Monitor Redis queues
-docker exec zord-intent-redis redis-cli LLEN Intent_Processing
-docker exec zord-intent-redis redis-cli LLEN Intent_Validated
-docker exec zord-intent-redis redis-cli LLEN Intent_DLQ
+docker exec intent-redis redis-cli LLEN Intent_Processing
+docker exec intent-redis redis-cli LLEN Intent_Validated
+docker exec intent-redis redis-cli LLEN Intent_DLQ
 
 # Check service connectivity
 curl http://localhost:8083/health
 
 # View service logs
-docker logs zord-intent-engine-service
+docker logs intent-engine
 
 # Check database records
-docker-compose exec postgres psql -U intent_user -d zord_intent_engine_db -c "SELECT COUNT(*) FROM canonical_intents;"
+docker-compose exec postgres psql -U intent_user -d intent_engine_db -c "SELECT COUNT(*) FROM canonical_intents;"
 ```
 
 ## Production Deployment
@@ -580,33 +580,33 @@ docker-compose exec postgres psql -U intent_user -d zord_intent_engine_db -c "SE
 For production deployment:
 
 1. **Security**:
-   - Use strong database passwords (minimum 16 characters)
-   - Enable database encryption at rest
-   - Implement proper network segmentation
-   - Use environment-specific configurations
+ - Use strong database passwords (minimum 16 characters)
+ - Enable database encryption at rest
+ - Implement proper network segmentation
+ - Use environment-specific configurations
 
 2. **Performance**:
-   - Configure appropriate batch sizes and poll intervals
-   - Set up database connection pooling
-   - Implement Redis clustering for high availability
-   - Monitor and tune validation rule performance
+ - Configure appropriate batch sizes and poll intervals
+ - Set up database connection pooling
+ - Implement Redis clustering for high availability
+ - Monitor and tune validation rule performance
 
 3. **Monitoring**:
-   - Set up centralized logging with structured logs
-   - Configure alerts for processing failures and DLQ growth
-   - Monitor validation success rates and processing latency
-   - Track business metrics and SLA compliance
+ - Set up centralized logging with structured logs
+ - Configure alerts for processing failures and DLQ growth
+ - Monitor validation success rates and processing latency
+ - Track business metrics and SLA compliance
 
 4. **Reliability**:
-   - Implement circuit breakers for external dependencies
-   - Configure proper retry policies and backoff strategies
-   - Set up automated failover and recovery procedures
-   - Ensure proper backup and disaster recovery plans
+ - Implement circuit breakers for external dependencies
+ - Configure proper retry policies and backoff strategies
+ - Set up automated failover and recovery procedures
+ - Ensure proper backup and disaster recovery plans
 
 ## Support
 
 For issues or questions:
-1. Check service logs: `docker logs zord-intent-engine-service`
+1. Check service logs: `docker logs intent-engine`
 2. Verify Redis connectivity and queue status
 3. Check database connection and table structure
 4. Review validation rules and schema configuration

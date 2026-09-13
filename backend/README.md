@@ -183,7 +183,7 @@ cd observability
 docker-compose up -d
 
 # Run comprehensive tests
-.\zord-comprehensive-tester.ps1 -Mode all -OpenBrowser
+.\comprehensive-tester.ps1 -Mode all -OpenBrowser
 ```
 
 #### Observability Tools
@@ -278,7 +278,7 @@ done
 
 # Run integration tests
 cd observability
-.\zord-comprehensive-tester.ps1 -Mode all
+.\comprehensive-tester.ps1 -Mode all
 ```
 
 ### Docker Management
@@ -371,13 +371,13 @@ Client Request → edge → recon → intents
 ```bash
 # Run comprehensive observability tests
 cd observability
-.\zord-comprehensive-tester.ps1 -Mode all -Detailed
+.\comprehensive-tester.ps1 -Mode all -Detailed
 
 # Test specific service
-.\zord-comprehensive-tester.ps1 -Service edge -TrafficCount 100
+.\comprehensive-tester.ps1 -Service edge -TrafficCount 100
 
 # Generate test traffic
-.\zord-comprehensive-tester.ps1 -Mode traffic
+.\comprehensive-tester.ps1 -Mode traffic
 ```
 
 ### Health Checks
@@ -421,7 +421,7 @@ Each service uses environment-specific configuration:
 - [console README](./console/README.md) - Web dashboard docs
 
 ### Observability Documentation
-- [Complete Observability Guide](../observability/ZORD-OBSERVABILITY-COMPLETE-GUIDE.md)
+- Observability stack (Grafana, Prometheus, Jaeger)
 - Comprehensive monitoring and testing documentation
 - PowerShell testing script usage guide
 
@@ -461,7 +461,7 @@ docker-compose ps
 curl http://localhost:[port]/health
 
 # Run observability tests
-cd observability && .\zord-comprehensive-tester.ps1
+cd observability && .\comprehensive-tester.ps1
 ```
 
 ### Support Resources

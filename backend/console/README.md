@@ -1,6 +1,6 @@
-# Zord Console - Multi-Tenant Ingestion Dashboard
+# Console — Multi-Tenant Ingestion Dashboard
 
-A Next.js 14 application providing role-based dashboards for the Zord financial transaction ingestion platform.
+A Next.js 14 application providing role-based dashboards for payout reconciliation and transaction ingestion.
 
 ## 🚀 Quick Start
 
@@ -14,7 +14,7 @@ docker-compose up -d --build
 docker-compose ps
 
 # View logs
-docker-compose logs -f zord-console
+docker compose logs -f
 
 # Stop
 docker-compose down
@@ -126,7 +126,7 @@ NEXT_PUBLIC_API_BASE_URL=/api/v1
 
 ```yaml
 services:
-  zord-console:
+  console:
     build: .
     ports:
       - "3000:3000"

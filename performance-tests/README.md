@@ -1,4 +1,4 @@
-# Performance Testing — Zord Platform
+# Performance Testing — Payout Reconciliation
 
 Automated end-to-end load testing for all 9 backend microservices via Kong API Gateway.
 
@@ -19,20 +19,20 @@ k6 → local services → 9 backend processes
 | # | Test | Services Tested | VUs | Duration |
 |---|------|----------------|-----|----------|
 | 1 | Health Check | All 9 service health endpoints | 100 | 3.5 min |
-| 2 | Tenant Registration | zord-edge (admin API) | 20 | 3 min |
-| 3 | Ingest Pipeline | zord-edge (single + bulk CSV) | 10 | 3 min |
+| 2 | Tenant Registration | edge (admin API) | 20 | 3 min |
+| 3 | Ingest Pipeline | edge (single + bulk CSV) | 10 | 3 min |
 | 4 | Full E2E Flow | ALL services (12-step journey) | 20 | 5 min |
 | 5 | Rate Limiting | Kong plugins (bulk, settlement, AI) | 5+3+5 | 30 sec |
 | 6 | Spike Test | All Kong routes simultaneously | 200 | 55 sec |
-| 7 | Intelligence Surface | zord-intelligence + evidence + outcome | 15 | 3 min |
-| 8 | AI Copilot | zord-prompt-layer (query + chat) | 10 | 3 min |
+| 7 | Intelligence Surface | intelligence + evidence + outcome | 15 | 3 min |
+| 8 | AI Copilot | prompt-layer (query + chat) | 10 | 3 min |
 | 9 | Security & CORS | Kong security headers + CORS + rate headers | 20 | 2 min |
 
 ---
 
 ## What Gets Tested (Every Endpoint)
 
-### zord-edge (Port 8080)
+### edge (Port 8080)
 - `POST /v1/admin/tenantReg` — Create tenant
 - `GET  /v1/admin/tenants` — List tenants
 - `GET  /v1/admin/tenants/:id` — Get tenant
@@ -40,42 +40,42 @@ k6 → local services → 9 backend processes
 - `POST /v1/bulk-ingest` — Bulk CSV upload
 - `GET  /edge/health` — Health check
 
-### zord-intent-engine (Port 8083)
+### intent-engine (Port 8083)
 - `GET /v1/intents` — Query intents
 - `GET /v1/dlq` — Dead letter queue
 - `GET /v1/etl` — ETL run status
 - `GET /intent/health` — Health check
 
-### zord-relay (Port 8082)
+### relay (Port 8082)
 - `GET /v1/dispatch` — Dispatch status
 - `GET /relay/health` — Health check
 
-### zord-outcome-engine (Port 8081)
+### outcome-engine (Port 8081)
 - `GET  /v1/settlement/supported-psps` — List PSPs
 - `GET  /v1/settlement/observations/batches` — Batch observations
 - `GET  /v1/reconciliation` — Reconciliation results
 - `GET  /outcome/health` — Health check
 
-### zord-evidence (Port 8088)
+### evidence (Port 8088)
 - `GET  /v1/evidence/packs` — List evidence packs
 - `GET  /v1/verify` — Merkle verification
 - `GET  /evidence/health` — Health check
 
-### zord-intelligence (Port 8089)
+### intelligence (Port 8089)
 - `GET /v1/projections` — Risk scores / KPIs
 - `GET /v1/policies` — Policy rules
 - `GET /v1/rca` — Root cause analysis
 - `GET /intelligence/health` — Health check
 
-### zord-prompt-layer (Port 8086)
+### prompt-layer (Port 8086)
 - `POST /v1/query` — AI natural language query
 - `POST /v1/chat` — AI conversation
 - `GET  /prompt/health` — Health check
 
-### zord-token-enclave (Port 8087)
+### token-enclave (Port 8087)
 - `GET /token/health` — Health check
 
-### zord-console (Port 3000)
+### console (Port 3000)
 - `GET /` — Frontend dashboard
 
 ---
@@ -110,9 +110,9 @@ Beautiful card with:
 
 | Dashboard | URL | UID |
 |-----------|-----|-----|
-| Platform Health & Alerts | http://localhost:3001/d/zord-platform-health | zord-platform-health |
-| PostgreSQL & Kafka | http://localhost:3001/d/zord-data-layer | zord-data-layer |
-| Node & Infrastructure | http://localhost:3001/d/zord-nodes-infra | zord-nodes-infra |
+| Platform Health & Alerts | http://localhost:3001/d/platform-health | platform-health |
+| PostgreSQL & Kafka | http://localhost:3001/d/data-layer | data-layer |
+| Node & Infrastructure | http://localhost:3001/d/nodes-infra | nodes-infra |
 
 ---
 
@@ -141,7 +141,7 @@ performance-tests/
 
 ```bash
 # Install k6: https://k6.io/docs/get-started/installation/
-k6 run --env BASE_URL="http://localhost:8080" --env ADMIN_KEY="zord123" performance-tests/scripts/01-health-check.js
+k6 run --env BASE_URL="http://localhost:8080" --env ADMIN_KEY="admin" performance-tests/scripts/01-health-check.js
 ```
 
 ---

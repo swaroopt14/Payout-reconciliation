@@ -4,7 +4,7 @@ Single-container API simulator for **manual payout-command UI review**. All back
 
 The Next.js console BFF still runs locally (`npm run dev`); it proxies to this simulator instead of real microservices.
 
-## How this compares to `zord-intelligence/docker-compose.test.yml`
+## How this compares to `intel/docker-compose.test.yml`
 
 | | Intelligence `docker-compose.test.yml` | Payout smoke simulator |
 |---|----------------------------------------|-------------------------|
@@ -36,13 +36,13 @@ docker compose up -d --build
 
 # 2. Wire the console to the simulator
 cd ../console
-# Point every ZORD_*_URL + PROMPT_LAYER_URL at http://localhost:8099 in .env.local
+# Point every backend *_URL and PROMPT_LAYER_URL at http://localhost:8099 in .env.local
 # (see Console env below). Do not commit .env.local.
 npm install
 npm run dev
 ```
 
-Open http://localhost:3000/signin and sign in with an **allowed** email and password (`ZORD_LOGIN_USERS`). Random accounts are rejected.
+Open http://localhost:3000/signin and sign in with an **allowed** email and password (login allow-list in `.env.local`). Random accounts are rejected.
 
 ## Upload-first mode (default)
 
@@ -99,7 +99,7 @@ SMOKE_BATCH_COUNT=10 docker compose up -d --build
 |----------|---------|---------|
 | `SMOKE_SIMULATOR_PORT` | `8099` | Host port mapping |
 | `SMOKE_TENANT_ID` | `00000000-0000-0000-0000-000000000001` | Tenant on all fixtures |
-| `SMOKE_API_KEY` | `zord-local-dev-api-key` | Accepted Bearer key for settlement routes |
+| `SMOKE_API_KEY` | `local-dev-api-key` | Accepted Bearer key for settlement routes |
 | `SMOKE_DEMO_DAY_COUNT` | `366` | Days for home/leakage trend charts |
 | `SMOKE_BATCH_COUNT` | `10` | Journal/evidence list batch count |
 | `SMOKE_LATENCY_MS` | `0` | Artificial delay on heavy list routes |
@@ -113,7 +113,7 @@ Every `POST /v1/auth/login` records **email, time, IP, user-agent, latency** —
 
 ```bash
 # After compose is up and someone signs in via the console:
-curl -sS -H "Authorization: Bearer zord-local-dev-api-key" \
+curl -sS -H "Authorization: Bearer $SMOKE_API_KEY" \
   "http://localhost:8099/v1/smoke/login-audit?limit=20"
 ```
 
@@ -143,8 +143,8 @@ Do **not** commit console env files. Use a local `.env.local` (gitignored) or AW
 
 | Mode | What to set |
 |------|-------------|
-| **Smoke (demo)** | Every `ZORD_*_URL` + `PROMPT_LAYER_URL` → smoke host (`http://localhost:8099` locally, or your smoke ALB on AWS). Match `ZORD_SETTLEMENT_API_KEY` / `ZORD_BULK_INGEST_API_KEY` to smoke `SMOKE_API_KEY`. |
-| **Live backends** | Each `ZORD_*_URL` / `PROMPT_LAYER_URL` → that microservice’s URL. Do not point them at smoke. |
+| **Smoke (demo)** | Every backend service URL + `PROMPT_LAYER_URL` → smoke host (`http://localhost:8099` locally, or your smoke ALB on AWS). Match settlement and bulk-ingest API keys to smoke `SMOKE_API_KEY`. |
+| **Live backends** | Each backend service URL / `PROMPT_LAYER_URL` → that microservice’s URL. Do not point them at smoke. |
 
 Smoke and live are mutually exclusive for a given console deployment.
 

@@ -1,6 +1,6 @@
-# Zord Ingestion Console
+# Ingestion Console
 
-A fully functional frontend for the Zord Ingestion Console, built with Next.js 14, TypeScript, and Tailwind CSS.
+A fully functional frontend for the ingestion console, built with Next.js 14, TypeScript, and Tailwind CSS.
 
 ## Features
 

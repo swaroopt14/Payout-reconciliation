@@ -1,10 +1,10 @@
-# Zord Edge Microservice
+# Edge Microservice
 
-A high-performance API gateway and ingestion service for the Zord platform, built with Go and Gin framework with comprehensive observability and tracing capabilities.
+A high-performance API gateway and ingestion service, built with Go and Gin, with observability and tracing.
 
 ## Overview
 
-The Zord Edge service handles request processing, authentication, and routing for the Zord Ingestion platform. It runs on port `8080` and integrates with PostgreSQL for data persistence.
+Edge handles request processing, authentication, and routing for ingestion. It runs on port `8080` and integrates with PostgreSQL for data persistence.
 
 ## Features
 
@@ -60,7 +60,7 @@ docker-compose up --build
 docker-compose up -d --build
 
 # View logs
-docker-compose logs -f zord-edge
+docker compose logs -f
 
 # Stop services
 docker-compose down
@@ -123,9 +123,10 @@ Environment variables:
 ```env
 DB_HOST=localhost
 DB_PORT=5432
-DB_USER=zord_user
-DB_PASSWORD=zord_password
-DB_NAME=zord_edge_db
+DB_USER=edge
+DB_PASSWORD=edge
+DB_NAME=edge
+# Must match this service's docker-compose.yml
 DB_SSLMODE=disable
 ENVIRONMENT=development
 ```
@@ -155,7 +156,7 @@ The application automatically creates required tables on startup. Currently crea
 ### Accessing Database
 ```bash
 # Connect to PostgreSQL inside Docker container
-docker-compose exec postgres psql -U zord_user -d zord_edge_db
+docker compose exec postgres psql -U "$DB_USER" -d "$DB_NAME"
 
 # View tables
 \dt
@@ -169,7 +170,7 @@ docker-compose exec postgres psql -U zord_user -d zord_edge_db
 ### Building
 ```bash
 # Local build
-go build -o zord-edge ./cmd/main.go
+go build -o edge ./cmd/main.go
 
 # Docker build
 docker-compose build --no-cache
@@ -197,9 +198,9 @@ golangci-lint run
 - **CGO enabled**: For PostgreSQL driver support
 
 ### docker-compose.yml
-- **Service**: Zord Edge application
+- **Service**: Edge application
 - **Database**: PostgreSQL with persistent volume
-- **Network**: Isolated `zord-network` for service communication
+- **Network**: Isolated compose network for service communication
 - **Health checks**: Automatic service monitoring
 - **Environment**: Production-ready configuration
 
@@ -217,7 +218,7 @@ docker-compose up -d -p 8081:8080
 docker-compose logs postgres
 
 # Verify credentials in environment variables
-docker-compose exec zord-edge env | grep DB_
+docker compose exec edge env | grep DB_
 
 # For SSL connection issues, ensure DB_SSLMODE is set to 'disable' in docker-compose.yml
 # Add to environment section:
@@ -245,7 +246,7 @@ For production deployment:
 ## Integration
 
 This service integrates with:
-- **Zord Vault Journal**: For secure journal storage
+- **Vault / token enclave**: For secure journal storage
 - **Frontend Console**: Provides APIs for the dashboard
 - **PostgreSQL**: Primary data store
 - **OpenTelemetry Collector**: For distributed tracing
@@ -277,7 +278,7 @@ curl http://localhost:8080/health
 curl http://localhost:8080/metrics
 
 # Check traces in Jaeger
-# Open http://localhost:16686 and select 'zord-edge' service
+# Open http://localhost:16686 and select the edge service
 ```
 
 ### Key Metrics

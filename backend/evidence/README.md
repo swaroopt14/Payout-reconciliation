@@ -1,6 +1,6 @@
-# zord-evidence
+# Evidence
 
-Zord Evidence Service (Service 6) builds cryptographically verifiable evidence packs for payout traceability.
+Evidence builds cryptographically verifiable evidence packs for payout traceability.
 
 ## Scope
 

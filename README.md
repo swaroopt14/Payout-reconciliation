@@ -303,7 +303,7 @@ cd backend/edge
 go test ./validator ./services ./handler -count=1
 
 cd backend/agents
-go test ./agents/askzord/ ./agents/investigate/ ./agents/finance/ ./tools/ -count=1
+go test ./agents/... ./tools/ -count=1
 ```
 
 ### Evaluation harness
@@ -361,13 +361,13 @@ Live keys are refused unless explicitly allowed. Webhook signatures are verified
 
 | Method | Endpoint |
 |---|---|
-| `POST` | `/v1/ask-zord/finance/query` |
+| `POST` | `/v1/finance/query` (agents service) |
 | `POST` | `/v1/investigations` |
 | `GET` | `/v1/investigations/:id` |
 | `GET` | `/v1/investigations/:id/trace` |
 
 ```bash
-curl -X POST http://localhost:8086/v1/ask-zord/finance/query \
+curl -X POST http://localhost:8086/v1/finance/query \
   -H "Content-Type: application/json" \
   -d '{"tenant_id":"<uuid>","query":"What is the match rate and which exceptions remain?"}'
 ```

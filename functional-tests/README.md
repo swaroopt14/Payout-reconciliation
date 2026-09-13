@@ -1,4 +1,4 @@
-# Functional Integration Tests — Zord Platform
+# Functional Integration Tests — Payout Reconciliation
 
 Automated tests that verify **business logic works end-to-end** after every deployment.
 
@@ -27,13 +27,13 @@ Unlike performance tests (which check "can it handle load?"), these verify "does
 
 | # | Test | What It Verifies |
 |---|------|-----------------|
-| 01 | zord-edge health | Pod alive, can respond |
-| 02 | zord-intent-engine health | Pod alive, can respond |
-| 03 | zord-outcome-engine health | Pod alive, can respond |
-| 04 | zord-evidence health | Pod alive, can respond |
-| 05 | zord-intelligence health | Pod alive, can respond |
-| 06 | zord-prompt-layer health | Pod alive, can respond |
-| 07 | zord-relay health | Pod alive, can respond |
+| 01 | edge health | Pod alive, can respond |
+| 02 | intent-engine health | Pod alive, can respond |
+| 03 | outcome-engine health | Pod alive, can respond |
+| 04 | evidence health | Pod alive, can respond |
+| 05 | intelligence health | Pod alive, can respond |
+| 06 | prompt-layer health | Pod alive, can respond |
+| 07 | relay health | Pod alive, can respond |
 | 08 | Create tenant | Admin key works, DB stores tenant |
 | 09 | Query tenant by ID | DB read works, tenant persisted |
 | 10 | Single payment ingest | Auth works, S3 stores envelope, DB records it |
