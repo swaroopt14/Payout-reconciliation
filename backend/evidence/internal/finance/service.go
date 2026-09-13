@@ -223,6 +223,9 @@ func (s *Service) SealInvestigation(ctx context.Context, ev DecisionEvent) (Pack
 	if err != nil {
 		return Pack{}, err
 	}
+	if err := validateSealRefs(ev, list); err != nil {
+		return Pack{}, err
+	}
 	if ev.CitedEvidenceIDs != nil {
 		allowed := map[string]struct{}{}
 		for _, e := range list {
@@ -376,6 +379,28 @@ func selectedCandidate(cands []Candidate) string {
 		}
 	}
 	return ""
+}
+
+func validateSealRefs(ev DecisionEvent, list []Evidence) error {
+	has := func(sourceID, evidenceType string) bool {
+		sourceID = strings.TrimSpace(sourceID)
+		if sourceID == "" {
+			return true
+		}
+		for _, e := range list {
+			if e.SourceID == sourceID && e.EvidenceType == evidenceType {
+				return true
+			}
+		}
+		return false
+	}
+	if !has(ev.EvidenceRefs.SettlementLineID, TypeSettlementRecord) {
+		return fmt.Errorf("unresolvable_settlement_ref")
+	}
+	if !has(ev.EvidenceRefs.BankObservationID, TypeBankTransaction) {
+		return fmt.Errorf("unresolvable_bank_ref")
+	}
+	return nil
 }
 
 func absentTypes(list []Evidence) []string {

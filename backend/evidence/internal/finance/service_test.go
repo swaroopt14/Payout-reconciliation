@@ -199,6 +199,39 @@ func TestPayoutEvidence(t *testing.T) {
 	}
 }
 
+func TestSealRejectsUnresolvableSettlementRef(t *testing.T) {
+	svc := NewService(NewMemoryStore())
+	ev := failedBankEvent()
+	if _, err := svc.IngestDecision(context.Background(), ev); err != nil {
+		t.Fatal(err)
+	}
+	ev.InvestigationID = "inv_bad_setl"
+	ev.EvidenceRefs.SettlementLineID = "sl_ghost"
+	_, err := svc.SealInvestigation(context.Background(), ev)
+	if err == nil || !strings.Contains(err.Error(), "unresolvable_settlement_ref") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestSealRejectsUnresolvableBankRef(t *testing.T) {
+	svc := NewService(NewMemoryStore())
+	ev := DecisionEvent{
+		TenantID: "tenant-a", EntityType: "payment", EntityID: "pay_nobank",
+		Status: "captured", Result: "UNRESOLVED", Reason: "captured_missing_settlement",
+		ExpectedAmount: 1000, Currency: "INR",
+		EvidenceRefs: EvidenceRefs{CanonicalPaymentID: "cp_x"},
+	}
+	if _, err := svc.IngestDecision(context.Background(), ev); err != nil {
+		t.Fatal(err)
+	}
+	ev.InvestigationID = "inv_bad_bank"
+	ev.EvidenceRefs.BankObservationID = "bank_ghost"
+	_, err := svc.SealInvestigation(context.Background(), ev)
+	if err == nil || !strings.Contains(err.Error(), "unresolvable_bank_ref") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
 func TestFabricatedEvidenceIDRejected(t *testing.T) {
 	svc := NewService(NewMemoryStore())
 	ev := failedBankEvent()
