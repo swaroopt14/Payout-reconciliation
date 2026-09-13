@@ -88,6 +88,7 @@ const (
 	TypeBankCSV        = "bank_statement_csv"
 	TypeSettlementCSV  = "settlement_recon_csv"
 	TypeSettlementJSON = "settlement_recon_json"
+	TypeMerchantBooks  = "merchant_books_csv"
 )
 
 const NextStepRunRecon = "run_reconciliation"
@@ -95,4 +96,5 @@ const NextStepRunRecon = "run_reconciliation"
 const (
 	CopyBankImported       = "bank observation imported"
 	CopySettlementImported = "settlement observation imported"
+	CopyMerchantImported   = "merchant books imported"
 )

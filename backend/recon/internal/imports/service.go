@@ -183,6 +183,12 @@ func (s *Service) parse(imp Import) ([]RowResult, []string, error) {
 			return nil, nil, err
 		}
 		return out.Rows, nil, nil
+	case TypeMerchantBooks:
+		out, err := ParseMerchantBooksCSV(imp.Payload, imp.FileSHA256)
+		if err != nil {
+			return nil, nil, err
+		}
+		return out.Rows, nil, nil
 	default:
 		rows, detected, err := ParseBankCSV(imp.Payload, BankOptions{
 			AccountID: imp.AccountID, Mapping: imp.SelectedMapping, Currency: imp.Currency,
@@ -246,6 +252,26 @@ func buildOutbox(imp Import, rows []RowResult) []models.OutboxRow {
 				EventID: uuid.Must(uuid.NewV7()), TenantID: tid,
 				AggregateType: "provider_settlement_line_observation", AggregateID: uuid.Must(uuid.NewV7()),
 				EventType: models.EventTypeSettlementObservationNormalizedV1, Payload: payload, CreatedAt: now,
+			})
+		}
+		if r.Merchant != nil {
+			payload, _ := json.Marshal(map[string]any{
+				"event_type":    "merchant.books.normalized.v1",
+				"event_version": models.EventVersionV1,
+				"schema_version": models.SchemaVersionV1,
+				"tenant_id":     imp.TenantID,
+				"invoice_id":    r.Merchant.InvoiceID,
+				"payment_id":    r.Merchant.PaymentID,
+				"payout_id":     r.Merchant.PayoutID,
+				"amount_minor":  r.Merchant.AmountMinor,
+				"currency":      r.Merchant.Currency,
+				"source_hash":   imp.FileSHA256,
+				"import_id":     imp.ID,
+			})
+			events = append(events, models.OutboxRow{
+				EventID: uuid.Must(uuid.NewV7()), TenantID: tid,
+				AggregateType: "merchant_book_fact", AggregateID: uuid.Must(uuid.NewV7()),
+				EventType: "merchant.books.normalized.v1", Payload: payload, CreatedAt: now,
 			})
 		}
 		if r.Bank != nil {

@@ -53,6 +53,7 @@ type RowResult struct {
 	Raw               json.RawMessage
 	Settlement        *razorpay.NeutralSettlementLine
 	Bank              *BankObservation
+	Merchant          *MerchantBookRow
 }
 
 type BankObservation struct {
@@ -112,6 +113,8 @@ func (imp Import) HonestMessage() string {
 	switch imp.ImportType {
 	case TypeBankCSV:
 		return CopyBankImported
+	case TypeMerchantBooks:
+		return CopyMerchantImported
 	default:
 		return CopySettlementImported
 	}

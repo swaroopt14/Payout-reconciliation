@@ -112,23 +112,18 @@ func matchOneSettlementBank(line SettlementLine, credits []BankTxn) SettlementBa
 			"utr":            line.UTR,
 		},
 	}
+	cands := bankCandidates(credits)
 	utr := strings.TrimSpace(line.UTR)
 	if utr != "" {
-		var cands []BankTxn
-		for _, b := range credits {
-			if b.UTR == utr {
-				cands = append(cands, b)
-			}
+		sel := SelectByUTR(cands, utr)
+		if sel.Unique != nil {
+			return decideUniqueUTR(base, line, bankByID(credits, sel.Unique.ID), net)
 		}
-		if len(cands) == 1 {
-			return decideUniqueUTR(base, line, cands[0], net)
-		}
-		if len(cands) > 1 {
-			ids := bankIDs(cands)
+		if len(sel.IDs) > 1 {
 			base.State = BankMatchAmbiguous
 			base.Rule = "duplicate_utr_candidates"
-			base.Candidates = ids
-			base.Evidence["candidates"] = ids
+			base.Candidates = sel.IDs
+			base.Evidence["candidates"] = sel.IDs
 			return base
 		}
 		base.State = BankMatchUnresolved
@@ -136,19 +131,8 @@ func matchOneSettlementBank(line SettlementLine, credits []BankTxn) SettlementBa
 		return base
 	}
 
-	var amountCands []BankTxn
-	for _, b := range credits {
-		if b.CreditMinor != net {
-			continue
-		}
-		if b.Currency != "" && line.Currency != "" && b.Currency != line.Currency {
-			continue
-		}
-		if !inDateWindow(line.SettledAt, b.ValueDate) {
-			continue
-		}
-		amountCands = append(amountCands, b)
-	}
+	sel := SelectByAmountWindow(cands, net, line.Currency, line.SettledAt, defaultDateWindow)
+	amountCands := banksByIDs(credits, sel.IDs)
 	if len(amountCands) == 1 {
 		b := amountCands[0]
 		conf, breakdown := ScoreUTRAndAmount(false, true, b.Currency == line.Currency || line.Currency == "", true)
@@ -235,4 +219,27 @@ func bankIDs(banks []BankTxn) []string {
 		ids = append(ids, b.ID)
 	}
 	return ids
+}
+
+func bankByID(banks []BankTxn, id string) BankTxn {
+	for _, b := range banks {
+		if b.ID == id {
+			return b
+		}
+	}
+	return BankTxn{}
+}
+
+func banksByIDs(banks []BankTxn, ids []string) []BankTxn {
+	want := map[string]struct{}{}
+	for _, id := range ids {
+		want[id] = struct{}{}
+	}
+	var out []BankTxn
+	for _, b := range banks {
+		if _, ok := want[b.ID]; ok {
+			out = append(out, b)
+		}
+	}
+	return out
 }

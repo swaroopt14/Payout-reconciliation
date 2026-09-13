@@ -560,8 +560,12 @@ func (h *FinancialHandler) ListInstruments(c *gin.Context) {
 		"instruments": recon.RazorpayInstruments(),
 		"psps":        []string{"razorpay", "cashfree", "payu", "stripe"},
 		"legs": gin.H{
-			"two_way":   "merchant books vs PSP books (captured+settlement, or payout processed)",
+			"two_way":   "merchant_books vs PSP when merchant facts are present; otherwise PSP payment vs PSP settlement (legacy merchant_psp_settled)",
 			"three_way": "two_way plus proven bank CREDIT (inbound) or DEBIT (outbound)",
+		},
+		"source_kinds": []string{
+			recon.SourceKindMerchant, recon.SourceKindPayment, recon.SourceKindPayout,
+			recon.SourceKindSettlement, recon.SourceKindBank, recon.SourceKindDispute,
 		},
 	})
 }

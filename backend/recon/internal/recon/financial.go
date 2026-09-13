@@ -31,11 +31,13 @@ type EvidenceRefs struct {
 	ObservationEventIDs      []string `json:"observation_event_ids,omitempty"`
 	SettlementLineID         string   `json:"settlement_line_id,omitempty"`
 	SettlementBankDecisionID string   `json:"settlement_bank_decision_id,omitempty"`
-	BankObservationID        string   `json:"bank_observation_id,omitempty"`
-	PayloadHashes            []string `json:"payload_hashes,omitempty"`
-	PaymentAmountMinor       int64    `json:"payment_amount_minor,omitempty"`
-	SettlementNetMinor       int64    `json:"settlement_net_minor,omitempty"`
-	BankCreditMinor          int64    `json:"bank_credit_minor,omitempty"`
+	BankObservationID        string      `json:"bank_observation_id,omitempty"`
+	MerchantFactID           string      `json:"merchant_fact_id,omitempty"`
+	PayloadHashes            []string    `json:"payload_hashes,omitempty"`
+	PaymentAmountMinor       int64       `json:"payment_amount_minor,omitempty"`
+	SettlementNetMinor       int64       `json:"settlement_net_minor,omitempty"`
+	BankCreditMinor          int64       `json:"bank_credit_minor,omitempty"`
+	Sources                  []SourceRef `json:"sources,omitempty"`
 }
 
 type PaymentFact struct {
@@ -96,6 +98,7 @@ type PayoutInput struct {
 	Banks      []BankTxn
 	Now        time.Time
 	StuckAfter time.Duration
+	Merchant   *MerchantBookFact
 }
 
 type FinancialInput struct {
@@ -105,6 +108,8 @@ type FinancialInput struct {
 	Decisions  []SettlementBankDecision
 	Banks      []BankTxn
 	Refunds    []RefundFact
+	Merchant   *MerchantBookFact
+	Disputes   []DisputeFact
 	Now        time.Time
 	StuckAfter time.Duration
 }
@@ -129,6 +134,8 @@ type FinancialResult struct {
 	Rail             string
 	TwoWay           ReconLeg
 	ThreeWay         ReconLeg
+	MerchantObserved bool
+	MerchantAgreed   bool
 	CreatedAt        time.Time
 	Exception        *ReconciliationException
 }
@@ -261,6 +268,24 @@ func reconcileCaptured(out FinancialResult, in FinancialInput, hasPaymentSettlem
 	if currencySidesConflict(in.Payment.Currency, settlementCurrencies(paymentLines), bankCurrencies(in.Banks)) {
 		out.ObservedAmount = settlementNet(in.Lines)
 		return withException(out, ResultVariance, "currency_mismatch", 0.95)
+	}
+	if in.Merchant != nil {
+		out.MerchantObserved = true
+		out.EvidenceRefs.MerchantFactID = in.Merchant.ID
+	}
+	if gap, reason, ok := merchantBooksGap(in.Payment, in.Merchant); ok {
+		out.MerchantAgreed = false
+		out.ExpectedAmount = in.Merchant.AmountMinor
+		out.ObservedAmount = in.Payment.AmountMinor
+		out.VarianceAmount = gap
+		return withException(out, ResultVariance, reason, 0.95)
+	}
+	if in.Merchant != nil {
+		out.MerchantAgreed = true
+	}
+	if openChargeback(in.Disputes) {
+		out.ObservedAmount = settlementNet(in.Lines)
+		return withException(out, ResultVariance, "open_chargeback", 0.9)
 	}
 	if gap, partial := partialSettlementGap(in.Payment.AmountMinor, paymentLines); partial {
 		out.ObservedAmount = settlementNet(in.Lines)
@@ -570,6 +595,7 @@ func lineID(l SettlementLine) string {
 func evidenceFrom(in FinancialInput) EvidenceRefs {
 	refs := EvidenceRefs{
 		CanonicalPaymentID: in.Payment.ID,
+		Sources:            sourceRefsFromInput(in),
 	}
 	for _, ev := range in.Events {
 		if ev.SourceEventID != "" {
@@ -579,8 +605,25 @@ func evidenceFrom(in FinancialInput) EvidenceRefs {
 			refs.PayloadHashes = append(refs.PayloadHashes, ev.SourceHash)
 		}
 	}
-	if in.Payment.ID != "" {
-		// keep
+	if in.Merchant != nil {
+		refs.MerchantFactID = in.Merchant.ID
+	}
+	return refs
+}
+
+func sourceRefsFromInput(in FinancialInput) []SourceRef {
+	var refs []SourceRef
+	if in.Payment.PaymentID != "" || in.Payment.ID != "" {
+		refs = append(refs, SourceRef{Kind: SourceKindPayment, ID: firstNonEmpty(in.Payment.ID, in.Payment.PaymentID), Amount: in.Payment.AmountMinor})
+	}
+	if in.Merchant != nil {
+		refs = append(refs, SourceRef{Kind: SourceKindMerchant, ID: firstNonEmpty(in.Merchant.ID, in.Merchant.InvoiceID), Amount: in.Merchant.AmountMinor})
+	}
+	for _, l := range in.Lines {
+		refs = append(refs, SourceRef{Kind: SourceKindSettlement, ID: lineID(l), Amount: l.CreditMinor - l.DebitMinor})
+	}
+	for _, b := range in.Banks {
+		refs = append(refs, SourceRef{Kind: SourceKindBank, ID: b.ID, Amount: b.CreditMinor})
 	}
 	return refs
 }
@@ -628,6 +671,14 @@ func EvidenceIDList(r EvidenceRefs) []string {
 	}
 	if r.BankObservationID != "" {
 		ids = append(ids, r.BankObservationID)
+	}
+	if r.MerchantFactID != "" {
+		ids = append(ids, r.MerchantFactID)
+	}
+	for _, s := range r.Sources {
+		if s.ID != "" {
+			ids = append(ids, s.ID)
+		}
 	}
 	return ids
 }

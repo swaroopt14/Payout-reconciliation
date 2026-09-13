@@ -52,6 +52,21 @@ func reconcilePayout(in PayoutInput) FinancialResult {
 	moved := HasBankMovement(in.Banks)
 	exact := exactDebit(p, debits)
 
+	if in.Merchant != nil {
+		out.MerchantObserved = true
+		out.EvidenceRefs.MerchantFactID = in.Merchant.ID
+	}
+	if gap, reason, ok := payoutMerchantGap(p, in.Merchant); ok {
+		out.MerchantAgreed = false
+		out.ExpectedAmount = in.Merchant.AmountMinor
+		out.ObservedAmount = p.AmountMinor
+		out.VarianceAmount = gap
+		return withException(out, ResultVariance, reason, 0.95)
+	}
+	if in.Merchant != nil {
+		out.MerchantAgreed = true
+	}
+
 	switch {
 	case razorpay.IsPayoutFailedLike(status):
 		if moved {

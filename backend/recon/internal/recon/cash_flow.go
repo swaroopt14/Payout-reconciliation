@@ -29,7 +29,8 @@ const (
 )
 
 // ReconLeg is one book-match layer. Top-level Result stays the close/eval oracle.
-// Two-way = merchant books vs PSP books. Three-way = that plus bank cash movement.
+// Two-way = merchant books vs PSP when MerchantObserved; otherwise PSP vs PSP (legacy label).
+// Three-way = that plus bank cash movement.
 type ReconLeg struct {
 	Result     string  `json:"result"`
 	Reason     string  `json:"reason"`
@@ -184,10 +185,16 @@ func twoWayReason(fr FinancialResult) string {
 		if fr.Reason == "failed_no_money_movement" || fr.Reason == "failed_refund_no_bank_movement" {
 			return "merchant_psp_no_movement"
 		}
+		if fr.MerchantObserved && fr.MerchantAgreed {
+			return "merchant_books_psp_payout"
+		}
 		return "merchant_psp_payout"
 	default:
 		if fr.Reason == "failed_no_money_movement" || fr.Reason == "failed_refund_no_bank_movement" {
 			return "merchant_psp_no_movement"
+		}
+		if fr.MerchantObserved && fr.MerchantAgreed {
+			return "merchant_books_psp"
 		}
 		return "merchant_psp_settled"
 	}
