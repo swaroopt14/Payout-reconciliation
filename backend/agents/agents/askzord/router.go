@@ -105,8 +105,8 @@ func Plan(question string, inherit EntityRef) QueryPlan {
 			p.Intent = IntentKnowledge
 			p.RequiredSources = []string{"knowledge"}
 		} else {
-			p.Intent = IntentAggregate
-			p.RequiredSources = []string{"summary", "exception"}
+			p.Intent = IntentKnowledge
+			p.RequiredSources = []string{"knowledge"}
 		}
 	}
 	if p.Entity.ID != "" && p.Entity.Type != "payout" &&
