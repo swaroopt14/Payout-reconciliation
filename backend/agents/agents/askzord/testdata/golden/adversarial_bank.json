@@ -1,6 +1,6 @@
 {
   "question": "Which bank caused the failures?",
-  "expected_intent": "AGGREGATE",
+  "expected_intent": "KNOWLEDGE",
   "required_facts": [],
   "forbidden_claims": ["HDFC caused", "ev_invented"],
   "required_limitations": ["UNKNOWN"]

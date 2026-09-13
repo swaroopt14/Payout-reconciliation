@@ -18,6 +18,8 @@ func TestRouterIntents(t *testing.T) {
 		{"Show me all failed payments where money moved", IntentInvestigation},
 		{"What is the difference between settlement and bank credit?", IntentKnowledge},
 		{"How much money did we lose from failed payments?", IntentAggregate},
+		{"Please review this workspace", IntentKnowledge},
+		{"Can you look at our numbers in general?", IntentKnowledge},
 	}
 	for _, tc := range cases {
 		p := Plan(tc.q, EntityRef{})
