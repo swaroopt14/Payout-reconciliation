@@ -262,6 +262,7 @@ export function DockNav({
   const onExceptions = pathname.startsWith('/exceptions')
   const onReconciliation = pathname.startsWith('/reconciliation') || pathname.startsWith('/settlement/review')
   const onCashPosition = pathname.startsWith('/cash-position')
+  const onBankStatements = pathname.startsWith('/bank-statements')
   const onInvestigations = pathname.startsWith('/investigations')
   const onEvaluation = pathname.startsWith('/evaluation')
   const onProofCenter = pathname.startsWith('/proof')
@@ -325,6 +326,7 @@ export function DockNav({
       pathname.startsWith('/exceptions') ||
       pathname.startsWith('/reconciliation') ||
       pathname.startsWith('/cash-position') ||
+      pathname.startsWith('/bank-statements') ||
       pathname.startsWith('/investigations') ||
       pathname.startsWith('/evaluation') ||
       pathname.startsWith('/transactions') ||
@@ -356,6 +358,7 @@ export function DockNav({
     !onExceptions &&
     !onReconciliation &&
     !onCashPosition &&
+    !onBankStatements &&
     !onInvestigations &&
     !onEvaluation &&
     !onProofCenter &&
@@ -718,7 +721,15 @@ export function DockNav({
         icon: 'bank',
         href: scopeHref('/cash-position'),
         match: onCashPosition,
-        ariaLabel: 'Cash position. Expected vs bank credited vs unresolved exposure.',
+        ariaLabel: 'Cash position. Derived settlement net vs bank credited vs unresolved exposure.',
+      },
+      {
+        id: 'bank-statements',
+        label: 'Bank statements',
+        icon: 'bank',
+        href: scopeHref('/bank-statements'),
+        match: onBankStatements,
+        ariaLabel: 'Bank statements. Per-row MATCHED or VARIANCE from recon.',
       },
       {
         id: 'investigations',
@@ -745,7 +756,7 @@ export function DockNav({
         ariaLabel: 'Ask. Finance operations copilot.',
       },
     ],
-    [scopeHref, onCashPosition, onInvestigations, onProofCenter, onAskZord],
+    [scopeHref, onCashPosition, onBankStatements, onInvestigations, onProofCenter, onAskZord],
   )
 
   const indiaDataNav: NavLinkItem[] = useMemo(

@@ -16,14 +16,6 @@ type ReconHandler struct {
 	Parser  services.BankStatementParser
 }
 
-func (h *ReconHandler) requireRelay(c *gin.Context) bool {
-	if !authorizeRelay(c.Request) {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
-		return false
-	}
-	return true
-}
-
 func (h *ReconHandler) UploadBankStatement(c *gin.Context) {
 	tenantID := strings.TrimSpace(c.Query("tenant_id"))
 	connectorID := strings.TrimSpace(c.Query("connector_id"))
@@ -80,14 +72,16 @@ type reconRunBody struct {
 }
 
 func (h *ReconHandler) Run(c *gin.Context) {
-	if !h.requireRelay(c) {
-		return
-	}
 	var body reconRunBody
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	tenantID, ok := relayTenantMustMatch(c, body.TenantID)
+	if !ok {
+		return
+	}
+	body.TenantID = tenantID
 	subjects, err := h.Service.Run(c.Request.Context(), body.TenantID, body.ConnectorID, body.AccountID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -148,7 +142,7 @@ func (h *ReconHandler) Gaps(c *gin.Context) {
 }
 
 func (h *ReconHandler) InternalGaps(c *gin.Context) {
-	if !h.requireRelay(c) {
+	if _, ok := relayTenantMustMatch(c, c.Query("tenant_id")); !ok {
 		return
 	}
 	h.Gaps(c)

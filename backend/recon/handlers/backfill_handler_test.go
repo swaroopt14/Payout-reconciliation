@@ -45,6 +45,7 @@ func TestBackfillRoutesRequireRelayToken(t *testing.T) {
 	}
 	req = httptest.NewRequest(http.MethodGet, "/internal/backfill/jobs/"+job.ID, nil)
 	req.Header.Set("X-Relay-Token", "secret-token")
+	req.Header.Set("X-Relay-Tenant-ID", "11111111-1111-1111-1111-111111111111")
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
@@ -80,6 +81,7 @@ func TestCreatePaymentsAccepted(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/internal/backfill/payments", bytes.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Relay-Token", "secret-token")
+	req.Header.Set("X-Relay-Tenant-ID", "11111111-1111-1111-1111-111111111111")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 	if w.Code != http.StatusAccepted {

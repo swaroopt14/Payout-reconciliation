@@ -39,15 +39,16 @@ func (h *FinancialHandler) Run(c *gin.Context) {
 }
 
 func (h *FinancialHandler) InternalRun(c *gin.Context) {
-	if !authorizeRelay(c.Request) {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
-		return
-	}
 	var body reconRunBody
 	_ = c.ShouldBindJSON(&body)
 	if body.TenantID == "" {
 		body.TenantID = strings.TrimSpace(c.Query("tenant_id"))
 	}
+	tenantID, ok := relayTenantMustMatch(c, body.TenantID)
+	if !ok {
+		return
+	}
+	body.TenantID = tenantID
 	if body.ConnectorID == "" {
 		body.ConnectorID = strings.TrimSpace(c.Query("connector_id"))
 	}
@@ -338,7 +339,22 @@ func (h *FinancialHandler) ListResults(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, out)
+	total := len(out.Results)
+	offset, limit, page, pageSize := pageWindow(c, total)
+	if offset < total {
+		out.Results = out.Results[offset : offset+limit]
+	} else {
+		out.Results = out.Results[:0]
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"records":     out.Records,
+		"matched":     out.Matched,
+		"exceptions":  out.Exceptions,
+		"results":     out.Results,
+		"page":        page,
+		"page_size":   pageSize,
+		"total":       total,
+	})
 }
 
 func (h *FinancialHandler) GetEvaluation(c *gin.Context) {
@@ -371,7 +387,12 @@ func (h *FinancialHandler) ListInvestigations(c *gin.Context) {
 	if list == nil {
 		list = []recon.InvestigationRecord{}
 	}
-	c.JSON(http.StatusOK, gin.H{"investigations": list})
+	total := len(list)
+	offset, limit, page, pageSize := pageWindow(c, total)
+	pageItems := list[offset : offset+limit]
+	c.JSON(http.StatusOK, gin.H{
+		"investigations": pageItems, "page": page, "page_size": pageSize, "total": total,
+	})
 }
 
 func (h *FinancialHandler) GetFinanceSummary(c *gin.Context) {
@@ -422,7 +443,11 @@ func (h *FinancialHandler) ListExceptions(c *gin.Context) {
 		}
 		out = append(out, ex)
 	}
-	c.JSON(http.StatusOK, gin.H{"exceptions": out})
+	total := len(out)
+	offset, limit, page, pageSize := pageWindow(c, total)
+	c.JSON(http.StatusOK, gin.H{
+		"exceptions": out[offset : offset+limit], "page": page, "page_size": pageSize, "total": total,
+	})
 }
 
 func (h *FinancialHandler) GetException(c *gin.Context) {
@@ -507,7 +532,11 @@ func (h *FinancialHandler) SearchSettlements(c *gin.Context) {
 		}
 		out = append(out, l)
 	}
-	c.JSON(http.StatusOK, gin.H{"settlements": out})
+	total := len(out)
+	offset, limit, page, pageSize := pageWindow(c, total)
+	c.JSON(http.StatusOK, gin.H{
+		"settlements": out[offset : offset+limit], "page": page, "page_size": pageSize, "total": total,
+	})
 }
 
 func (h *FinancialHandler) SearchBank(c *gin.Context) {
@@ -520,9 +549,23 @@ func (h *FinancialHandler) SearchBank(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	results, err := h.Store.ListReconciliationResults(c.Request.Context(), tenantID, connectorID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	byBank := map[string]recon.FinancialResult{}
+	for _, fr := range results {
+		if fr.EntityType == recon.EntityBank {
+			byBank[fr.EntityID] = fr
+		}
+		if fr.EvidenceRefs.BankObservationID != "" {
+			byBank[fr.EvidenceRefs.BankObservationID] = fr
+		}
+	}
 	id := strings.TrimSpace(c.Query("id"))
 	utr := strings.TrimSpace(c.Query("utr"))
-	var out []recon.BankTxn
+	var out []gin.H
 	for _, b := range banks {
 		if id != "" && b.ID != id && b.BankTxnID != id {
 			continue
@@ -530,9 +573,31 @@ func (h *FinancialHandler) SearchBank(c *gin.Context) {
 		if utr != "" && !strings.EqualFold(b.UTR, utr) && !strings.EqualFold(b.UTRRaw, utr) {
 			continue
 		}
-		out = append(out, b)
+		result := recon.ResultUnresolved
+		reason := "bank_not_matched"
+		if fr, ok := byBank[b.ID]; ok {
+			result = fr.Result
+			reason = fr.Reason
+		} else if fr, ok := byBank[b.BankTxnID]; ok {
+			result = fr.Result
+			reason = fr.Reason
+		}
+		out = append(out, gin.H{
+			"id": b.ID, "account_id": b.AccountID, "bank_txn_id": b.BankTxnID,
+			"utr": b.UTR, "description": b.Description, "currency": b.Currency,
+			"credit_minor": b.CreditMinor, "debit_minor": b.DebitMinor,
+			"credit_debit": b.CreditDebit, "value_date": b.ValueDate,
+			"recon_result": result, "recon_reason": reason,
+		})
 	}
-	c.JSON(http.StatusOK, gin.H{"bank_transactions": out})
+	if out == nil {
+		out = []gin.H{}
+	}
+	total := len(out)
+	offset, limit, page, pageSize := pageWindow(c, total)
+	c.JSON(http.StatusOK, gin.H{
+		"bank_transactions": out[offset : offset+limit], "page": page, "page_size": pageSize, "total": total,
+	})
 }
 
 func (h *FinancialHandler) GetBank(c *gin.Context) {

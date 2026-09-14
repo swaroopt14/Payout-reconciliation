@@ -33,10 +33,6 @@ type bankIngestBody struct {
 }
 
 func (h *BankIngestHandler) Ingest(c *gin.Context) {
-	if !authorizeRelay(c.Request) {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
-		return
-	}
 	if h == nil || h.Service == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "bank ingest not configured"})
 		return
@@ -46,6 +42,11 @@ func (h *BankIngestHandler) Ingest(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	tenantID, ok := relayTenantMustMatch(c, req.TenantID)
+	if !ok {
+		return
+	}
+	req.TenantID = tenantID
 	res, err := h.Service.IngestAndMatch(c.Request.Context(), req)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "ingest_failed"})

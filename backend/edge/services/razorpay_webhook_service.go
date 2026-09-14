@@ -259,7 +259,7 @@ func (s *RazorpayWebhookService) GetReceipt(ctx context.Context, receiptID uuid.
 }
 
 // ListReceiptsByConnector returns receipts for a connector.
-func (s *RazorpayWebhookService) ListReceiptsByConnector(connectorID uuid.UUID, limit int) ([]model.ProviderWebhookReceipt, error) {
+func (s *RazorpayWebhookService) ListReceiptsByConnector(tenantID, connectorID uuid.UUID, limit int) ([]model.ProviderWebhookReceipt, error) {
 	if limit <= 0 {
 		limit = 50
 	}
@@ -270,10 +270,10 @@ func (s *RazorpayWebhookService) ListReceiptsByConnector(connectorID uuid.UUID, 
 		       signature_valid, received_at, ingestion_status,
 		       delivery_count, created_at
 		FROM provider_webhook_receipts
-		WHERE connector_id = $1
+		WHERE tenant_id = $1 AND connector_id = $2
 		ORDER BY received_at DESC
-		LIMIT $2
-	`, connectorID, limit)
+		LIMIT $3
+	`, tenantID, connectorID, limit)
 	if err != nil {
 		return nil, err
 	}

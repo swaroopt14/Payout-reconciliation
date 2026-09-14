@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -211,6 +212,68 @@ func TestLedgerRequiresEntityID(t *testing.T) {
 	code, body := getJSON(t, r, "/v1/reconciliation/ledger?tenant_id=t&connector_id=c")
 	if code != 400 {
 		t.Fatalf("code=%d %v", code, body)
+	}
+}
+
+func TestFinanceRunFiftyPaymentsWithBankHTTP(t *testing.T) {
+	r, store := financeRouter(t)
+	const n = 50
+	pays := make([]recon.PaymentFact, 0, n)
+	lines := make([]recon.SettlementLine, 0, n)
+	banks := make([]recon.BankTxn, 0, n)
+	decs := make([]recon.SettlementBankDecision, 0, n)
+	for i := 0; i < n; i++ {
+		pid := fmt.Sprintf("pay_http_%02d", i)
+		sid := fmt.Sprintf("sl_http_%02d", i)
+		bid := fmt.Sprintf("b_http_%02d", i)
+		pays = append(pays, recon.PaymentFact{
+			PaymentID: pid, CanonicalStatus: recon.PaymentCaptured, Captured: true,
+			AmountMinor: 10000, Currency: "INR", BatchID: "BATCH-HTTP",
+		})
+		lines = append(lines, recon.SettlementLine{
+			ID: sid, PaymentID: pid, LineType: "payment", AmountMinor: 10000,
+			CreditMinor: 9728, FeeMinor: 272, Currency: "INR",
+		})
+		banks = append(banks, recon.BankTxn{
+			ID: bid, UTR: fmt.Sprintf("UTR%02d", i), CreditMinor: 9728, CreditDebit: "CREDIT", Currency: "INR",
+		})
+		decs = append(decs, recon.SettlementBankDecision{
+			ID: "d_" + sid, SettlementLineID: sid, BankObservationID: bid,
+			State: recon.BankMatchExact, Confidence: 0.99,
+			Evidence: map[string]any{"bank_credit_minor": int64(9728)},
+		})
+	}
+	store.Payments = pays
+	store.Lines = lines
+	store.Banks = banks
+	store.Decisions = decs
+	store.Results = nil
+	req := httptest.NewRequest(http.MethodPost, "/v1/reconciliation/run",
+		strings.NewReader(`{"tenant_id":"t","connector_id":"c","batch_id":"BATCH-HTTP"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(auth.WithPrincipalForTest(req.Context(), "t"))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("code=%d body=%s", w.Code, w.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if int(body["matched_count"].(float64)) != n {
+		t.Fatalf("matched_count=%v body=%v", body["matched_count"], body)
+	}
+	batch, ok := body["batch"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing batch %v", body)
+	}
+	if int(batch["records"].(float64)) != n {
+		t.Fatalf("batch.records=%v", batch["records"])
+	}
+	counts, _ := batch["counts"].(map[string]any)
+	if int(counts["MATCHED"].(float64)) != n {
+		t.Fatalf("MATCHED=%v", counts)
 	}
 }
 

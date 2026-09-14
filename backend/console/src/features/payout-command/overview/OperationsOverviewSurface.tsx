@@ -347,7 +347,7 @@ export function OperationsOverviewSurface() {
             <h2 className="text-[16px] font-semibold text-[#1A1A1A]">Cash position</h2>
             <dl className="mt-4 space-y-0">
               {[
-                ['Expected settlement', formatPaise(cash?.settlement_expected_net_minor ?? kpis.settledMinor, 2)],
+                ['Derived settlement net', formatPaise(cash?.settlement_derived_net_minor ?? cash?.settlement_expected_net_minor ?? kpis.settledMinor, 2)],
                 ['Bank credited', formatPaise(cash?.bank_credited_proven_minor ?? kpis.settledMinor, 2)],
                 ['Unresolved exposure', formatPaise(cash?.unresolved_exposure_minor ?? kpis.unresolvedMinor, 2)],
               ].map(([label, value]) => (

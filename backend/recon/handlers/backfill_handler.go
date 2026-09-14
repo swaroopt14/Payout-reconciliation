@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"net/http"
+	"strings"
 	"time"
 
 	"zord-outcome-engine/internal/poll"
@@ -25,14 +26,6 @@ type createBackfillBody struct {
 	OverlapMinutes *int   `json:"overlap_minutes"`
 }
 
-func (h *BackfillHandler) requireRelay(c *gin.Context) bool {
-	if !authorizeRelay(c.Request) {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
-		return false
-	}
-	return true
-}
-
 func (h *BackfillHandler) CreatePayments(c *gin.Context) {
 	h.createAndMaybeRun(c, poll.ResourcePayments, true)
 }
@@ -42,16 +35,18 @@ func (h *BackfillHandler) CreateSettlements(c *gin.Context) {
 }
 
 func (h *BackfillHandler) createAndMaybeRun(c *gin.Context, resource string, run bool) {
-	if !h.requireRelay(c) {
-		return
-	}
-	if h.Service == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "backfill not configured"})
-		return
-	}
 	var body createBackfillBody
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_request", "message": err.Error()})
+		return
+	}
+	tenantID, ok := relayTenantMustMatch(c, body.TenantID)
+	if !ok {
+		return
+	}
+	body.TenantID = tenantID
+	if h.Service == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "backfill not configured"})
 		return
 	}
 	from, err := time.Parse(time.RFC3339, body.WindowFrom)
@@ -111,8 +106,30 @@ func (h *BackfillHandler) createAndMaybeRun(c *gin.Context, resource string, run
 	})
 }
 
+func (h *BackfillHandler) bindJobTenant(c *gin.Context) (poll.BackfillJob, bool) {
+	if !authorizeRelay(c.Request) {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return poll.BackfillJob{}, false
+	}
+	ctxTenant := strings.TrimSpace(c.GetHeader(headerRelayTenant))
+	if ctxTenant == "" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "relay_tenant_required"})
+		return poll.BackfillJob{}, false
+	}
+	job, err := h.Service.GetJob(c.Request.Context(), c.Param("job_id"))
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not_found"})
+		return poll.BackfillJob{}, false
+	}
+	if !strings.EqualFold(job.TenantID, ctxTenant) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "tenant_mismatch"})
+		return poll.BackfillJob{}, false
+	}
+	return job, true
+}
+
 func (h *BackfillHandler) GetJob(c *gin.Context) {
-	if !h.requireRelay(c) {
+	if _, ok := h.bindJobTenant(c); !ok {
 		return
 	}
 	job, cursor, err := h.Service.GetJobWithCursor(c.Request.Context(), c.Param("job_id"))
@@ -124,7 +141,7 @@ func (h *BackfillHandler) GetJob(c *gin.Context) {
 }
 
 func (h *BackfillHandler) ResumeJob(c *gin.Context) {
-	if !h.requireRelay(c) {
+	if _, ok := h.bindJobTenant(c); !ok {
 		return
 	}
 	jobID := c.Param("job_id")
@@ -136,7 +153,7 @@ func (h *BackfillHandler) ResumeJob(c *gin.Context) {
 }
 
 func (h *BackfillHandler) CancelJob(c *gin.Context) {
-	if !h.requireRelay(c) {
+	if _, ok := h.bindJobTenant(c); !ok {
 		return
 	}
 	if err := h.Service.Cancel(c.Request.Context(), c.Param("job_id")); err != nil {
@@ -147,16 +164,12 @@ func (h *BackfillHandler) CancelJob(c *gin.Context) {
 }
 
 func (h *BackfillHandler) GetFreshness(c *gin.Context) {
-	if !h.requireRelay(c) {
+	job, ok := h.bindJobTenant(c)
+	if !ok {
 		return
 	}
 	if h.Freshness == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "freshness not configured"})
-		return
-	}
-	job, err := h.Service.GetJob(c.Request.Context(), c.Param("job_id"))
-	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "not_found"})
 		return
 	}
 	report, err := h.Freshness.CompareJob(c.Request.Context(), job)

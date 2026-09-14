@@ -40,6 +40,7 @@ func TestObservationIngestCaptured(t *testing.T) {
 	}`)
 	req := httptest.NewRequest(http.MethodPost, "/internal/observations/provider", bytes.NewReader(body))
 	req.Header.Set("X-Relay-Token", "secret-token")
+	req.Header.Set("X-Relay-Tenant-ID", "11111111-1111-1111-1111-111111111111")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 	if w.Code != 200 {
