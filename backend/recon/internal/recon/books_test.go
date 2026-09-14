@@ -16,6 +16,16 @@ func TestTaxBreakdownFeeExplained(t *testing.T) {
 	}
 }
 
+func TestCashScheduleIncludesOpenPayoutDebit(t *testing.T) {
+	now := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
+	sch := BuildCashSchedule(nil, nil, []PayoutFact{{
+		PayoutID: "pout_open", ProviderStatus: "queued", AmountMinor: 25000, ProviderCreatedAt: now,
+	}}, now, 7)
+	if sch.Days[0].ExpectedDebitMinor != 25000 {
+		t.Fatalf("debit=%d days=%+v", sch.Days[0].ExpectedDebitMinor, sch.Days[0])
+	}
+}
+
 func TestCashScheduleUnknownWhenNoSettledAt(t *testing.T) {
 	now := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 	sch := BuildCashSchedule([]FinancialResult{{

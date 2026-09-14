@@ -23,6 +23,7 @@ type MemoryStore struct {
 	Rows           map[string][]RowResult
 	Settlements    []razorpay.NeutralSettlementLine
 	Banks          []BankObservation
+	MerchantBooks  []MerchantBookRow
 	Outbox         []models.OutboxRow
 	ProofSubjects  int
 	PaymentAmounts map[string]int64
@@ -101,6 +102,9 @@ func (m *MemoryStore) Commit(_ context.Context, imp Import, rows []RowResult, ev
 				b.CreditDebit = bankSide(b.CreditMinor, b.DebitMinor)
 			}
 			m.Banks = append(m.Banks, b)
+		}
+		if rows[i].Merchant != nil {
+			m.MerchantBooks = append(m.MerchantBooks, *rows[i].Merchant)
 		}
 		rows[i].Status = RowInserted
 		inserted++

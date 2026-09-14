@@ -205,6 +205,19 @@ func (s *ImportSQLStore) Commit(ctx context.Context, imp imports.Import, rows []
 				imp.DuplicateRows++
 			}
 		}
+		if r.Merchant != nil {
+			res, err := s.upsertMerchant(ctx, tx, imp, r)
+			if err != nil {
+				return imports.Import{}, err
+			}
+			if res == "inserted" {
+				inserted++
+			} else if res == "updated" {
+				updated++
+			} else if res == "duplicate" {
+				imp.DuplicateRows++
+			}
+		}
 	}
 	for _, ev := range events {
 		if ev.EventID == uuid.Nil {
@@ -365,6 +378,47 @@ func (s *ImportSQLStore) upsertBank(ctx context.Context, tx *sql.Tx, imp imports
 		b.NormalizedDescription, b.CreditMinor, b.DebitMinor, b.Currency, nullIfEmpty(b.UTR), nullIfEmpty(b.ReferenceNumber),
 		b.RowHash, nullIfEmpty(imp.ID), nullIfEmpty(imp.ID), b.SourceRowNumber, b.Raw,
 		nullIfEmpty(b.CreditDebit), nullIfEmpty(b.UTRRaw), nullIfEmpty(b.IdentityHash),
+	)
+	if err != nil {
+		return "", err
+	}
+	n, _ := tag.RowsAffected()
+	if n == 0 {
+		return "duplicate", nil
+	}
+	return "inserted", nil
+}
+
+func merchantConnectorID(s string) string {
+	if strings.TrimSpace(s) == "" {
+		return "00000000-0000-0000-0000-000000000000"
+	}
+	return s
+}
+
+func (s *ImportSQLStore) upsertMerchant(ctx context.Context, tx *sql.Tx, imp imports.Import, r imports.RowResult) (string, error) {
+	m := r.Merchant
+	id := uuid.Must(uuid.NewV7()).String()
+	var due any
+	if !m.DueAt.IsZero() {
+		due = m.DueAt
+	}
+	tag, err := tx.ExecContext(ctx, `
+		INSERT INTO merchant_book_facts (
+			id, tenant_id, connector_id, invoice_id, order_id, payment_id, payout_id,
+			amount_minor, currency, due_at, batch_id, row_hash, import_id, fact_version
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,1)
+		ON CONFLICT (tenant_id, connector_id, row_hash) DO UPDATE SET
+			invoice_id=EXCLUDED.invoice_id, order_id=EXCLUDED.order_id,
+			payment_id=EXCLUDED.payment_id, payout_id=EXCLUDED.payout_id,
+			amount_minor=EXCLUDED.amount_minor, currency=EXCLUDED.currency, due_at=EXCLUDED.due_at,
+			batch_id=EXCLUDED.batch_id, import_id=EXCLUDED.import_id,
+			fact_version=merchant_book_facts.fact_version + 1, updated_at=now()
+		WHERE merchant_book_facts.amount_minor IS DISTINCT FROM EXCLUDED.amount_minor
+			OR merchant_book_facts.currency IS DISTINCT FROM EXCLUDED.currency
+			OR merchant_book_facts.due_at IS DISTINCT FROM EXCLUDED.due_at`,
+		id, imp.TenantID, merchantConnectorID(imp.ConnectorID), m.InvoiceID, m.OrderID, m.PaymentID, m.PayoutID,
+		m.AmountMinor, m.Currency, due, m.BatchID, m.RowHash, nullIfEmpty(imp.ID),
 	)
 	if err != nil {
 		return "", err

@@ -1,6 +1,10 @@
 package recon
 
-import "time"
+import (
+	"time"
+
+	"zord-outcome-engine/internal/poll/providers/razorpay"
+)
 
 type TaxBreakdown struct {
 	PaymentID          string `json:"payment_id"`
@@ -142,12 +146,45 @@ func BuildCashSchedule(results []FinancialResult, lines []SettlementLine, payout
 		slot.ExpectedCreditMinor += net
 		slot.Count++
 	}
+	provenOut := map[string]bool{}
+	for _, r := range results {
+		if r.EntityType == EntityPayout && r.BankCreditProven {
+			provenOut[r.EntityID] = true
+		}
+	}
+	for _, po := range payouts {
+		st := razorpay.NormalizePayoutStatus(po.ProviderStatus)
+		if razorpay.IsPayoutFailedLike(st) {
+			continue
+		}
+		if provenOut[po.PayoutID] {
+			continue
+		}
+		when := po.ProviderCreatedAt
+		if when.IsZero() {
+			when = po.FirstObservedAt
+		}
+		if when.IsZero() {
+			when = now
+		}
+		day := time.Date(when.Year(), when.Month(), when.Day(), 0, 0, 0, 0, time.UTC)
+		if day.Before(asOf) {
+			day = asOf
+		}
+		key := day.Format("2006-01-02")
+		slot, ok := byDate[key]
+		if !ok {
+			out.UnknownTimingMinor += po.AmountMinor
+			continue
+		}
+		slot.ExpectedDebitMinor += po.AmountMinor
+		slot.Count++
+	}
 	for i := range out.Days {
 		if s, ok := byDate[out.Days[i].Date]; ok {
 			out.Days[i] = *s
 		}
 	}
-	_ = payouts
 	return out
 }
 

@@ -26,6 +26,7 @@ type MemoryFinancialStore struct {
 	Investigations []InvestigationRecord
 	Outbox         []models.OutboxRow
 	Refunds        []RefundFact
+	MerchantBooks  []MerchantBookFact
 	heldRuns       map[string]struct{}
 }
 
@@ -244,6 +245,10 @@ func (m *MemoryFinancialStore) GetInvestigation(_ context.Context, _, _, id stri
 
 func (m *MemoryFinancialStore) ListInvestigations(context.Context, string, string) ([]InvestigationRecord, error) {
 	return append([]InvestigationRecord{}, m.Investigations...), nil
+}
+
+func (m *MemoryFinancialStore) ListMerchantBooks(context.Context, string, string) ([]MerchantBookFact, error) {
+	return append([]MerchantBookFact{}, m.MerchantBooks...), nil
 }
 
 func (m *MemoryFinancialStore) ListRefunds(_ context.Context, _, _, paymentID string) ([]RefundFact, error) {
