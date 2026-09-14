@@ -302,6 +302,34 @@ func TestStuckOpenStatusUnresolvedNotRenamed(t *testing.T) {
 	}
 }
 
+func TestFinancialRunLoadsMerchantBooksAsVariance(t *testing.T) {
+	store := NewMemoryFinancialStore()
+	store.Payments = []PaymentFact{{
+		PaymentID: "pay_001", CanonicalStatus: PaymentCaptured, Captured: true, AmountMinor: 10000, Currency: "INR",
+	}}
+	store.Lines = []SettlementLine{{
+		ID: "sl1", PaymentID: "pay_001", LineType: "payment", AmountMinor: 10000, CreditMinor: 9728, FeeMinor: 272, Currency: "INR",
+	}}
+	store.Banks = []BankTxn{{ID: "b1", UTR: "UTR123", CreditMinor: 9728, CreditDebit: "CREDIT", Currency: "INR"}}
+	store.Decisions = []SettlementBankDecision{{
+		ID: "d1", SettlementLineID: "sl1", BankObservationID: "b1", State: BankMatchExact, Confidence: 0.99,
+		Evidence: map[string]any{"bank_credit_minor": int64(9728)},
+	}}
+	store.MerchantBooks = []MerchantBookFact{{
+		ID: "inv1", InvoiceID: "INV-1", PaymentID: "pay_001", AmountMinor: 11000, Currency: "INR",
+	}}
+	svc := NewFinancialService(store)
+	_, results, err := svc.Run(context.Background(), FinancialRunRequest{
+		TenantID: "11111111-1111-1111-1111-111111111111", ConnectorID: "c",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) == 0 || results[0].Result != ResultVariance || results[0].Reason != "merchant_amount_mismatch" {
+		t.Fatalf("%+v", results)
+	}
+}
+
 func TestFinancialRunEmitsReconDecision(t *testing.T) {
 	store := NewMemoryFinancialStore()
 	store.Payments = []PaymentFact{{

@@ -30,6 +30,7 @@ type FinancialStore interface {
 	ListSettlementBankDecisions(ctx context.Context, tenantID, connectorID string) ([]SettlementBankDecision, error)
 	ListRefunds(ctx context.Context, tenantID, connectorID, paymentID string) ([]RefundFact, error)
 	UpsertRefund(ctx context.Context, tenantID, connectorID string, r RefundFact) (RefundFact, error)
+	ListMerchantBooks(ctx context.Context, tenantID, connectorID string) ([]MerchantBookFact, error)
 	TryLockTenantRun(ctx context.Context, tenantID, connectorID string) (unlock func(), err error)
 	InsertReconciliationRun(ctx context.Context, run ReconciliationRun) (ReconciliationRun, error)
 	CompleteReconciliationRun(ctx context.Context, run ReconciliationRun) error
@@ -105,6 +106,11 @@ func (s *FinancialService) Run(ctx context.Context, req FinancialRunRequest) (Re
 	if err != nil {
 		return run, nil, err
 	}
+	books, err := s.Store.ListMerchantBooks(ctx, req.TenantID, req.ConnectorID)
+	if err != nil {
+		return run, nil, err
+	}
+	byPay, byPayout := indexMerchantBooks(books)
 
 	wantPayout := payoutIDSet(req.PayoutIDs)
 	scoped := len(wantPayout) > 0 || strings.TrimSpace(req.BatchID) != ""
@@ -150,6 +156,7 @@ func (s *FinancialService) Run(ctx context.Context, req FinancialRunRequest) (Re
 			Decisions:  payDecisions,
 			Banks:      related,
 			Refunds:    refunds,
+			Merchant:   byPay[pay.PaymentID],
 			Now:        now,
 			StuckAfter: DefaultStuckAfter,
 		})
@@ -169,7 +176,7 @@ func (s *FinancialService) Run(ctx context.Context, req FinancialRunRequest) (Re
 		}
 		related := relatedPayoutBanks(po, events, banks)
 		fr := ReconcilePayout(PayoutInput{
-			Payout: po, Events: events, Banks: related, Now: now, StuckAfter: DefaultPayoutSLA,
+			Payout: po, Events: events, Banks: related, Merchant: byPayout[po.PayoutID], Now: now, StuckAfter: DefaultPayoutSLA,
 		})
 		markUsedBanks(usedBanks, fr)
 		results = append(results, fr)
@@ -782,6 +789,21 @@ func applySharedBankAmbiguity(results []FinancialResult) []FinancialResult {
 
 func normalizeUTR(s string) string {
 	return strings.ToUpper(strings.TrimSpace(s))
+}
+
+func indexMerchantBooks(facts []MerchantBookFact) (byPay, byPayout map[string]*MerchantBookFact) {
+	byPay = map[string]*MerchantBookFact{}
+	byPayout = map[string]*MerchantBookFact{}
+	for i := range facts {
+		f := &facts[i]
+		if pid := strings.TrimSpace(f.PaymentID); pid != "" {
+			byPay[pid] = f
+		}
+		if po := strings.TrimSpace(f.PayoutID); po != "" {
+			byPayout[po] = f
+		}
+	}
+	return byPay, byPayout
 }
 
 func scopePayments(pays []PaymentFact, batchID string) []PaymentFact {

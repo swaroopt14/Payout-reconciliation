@@ -605,6 +605,32 @@ func (s *ReconSQLStore) UpsertRefund(ctx context.Context, tenantID, connectorID 
 	return r, err
 }
 
+func (s *ReconSQLStore) ListMerchantBooks(ctx context.Context, tenantID, connectorID string) ([]recon.MerchantBookFact, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id::text, COALESCE(invoice_id,''), COALESCE(order_id,''), COALESCE(payment_id,''), COALESCE(payout_id,''),
+			amount_minor, currency, due_at, COALESCE(batch_id,'')
+		FROM merchant_book_facts
+		WHERE tenant_id=$1 AND (connector_id=$2 OR connector_id='00000000-0000-0000-0000-000000000000')
+		ORDER BY updated_at ASC`, tenantID, connectorID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []recon.MerchantBookFact
+	for rows.Next() {
+		var f recon.MerchantBookFact
+		var due sql.NullTime
+		if err := rows.Scan(&f.ID, &f.InvoiceID, &f.OrderID, &f.PaymentID, &f.PayoutID, &f.AmountMinor, &f.Currency, &due, &f.BatchID); err != nil {
+			return nil, err
+		}
+		if due.Valid {
+			f.DueAt = due.Time
+		}
+		out = append(out, f)
+	}
+	return out, rows.Err()
+}
+
 func nzCur(s string) string {
 	if s == "" {
 		return "INR"

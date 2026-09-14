@@ -41,4 +41,7 @@ func TestMerchantImportLifecycle(t *testing.T) {
 	if imp.HonestMessage() != CopyMerchantImported {
 		t.Fatalf("%s", imp.HonestMessage())
 	}
+	if imp.InsertedRows != 1 || len(store.MerchantBooks) != 1 || store.MerchantBooks[0].PaymentID != "pay_001" {
+		t.Fatalf("inserted=%d books=%+v", imp.InsertedRows, store.MerchantBooks)
+	}
 }
