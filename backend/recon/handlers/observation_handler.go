@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"net/http"
 
@@ -15,10 +16,6 @@ type ObservationHandler struct {
 }
 
 func (h *ObservationHandler) Ingest(c *gin.Context) {
-	if !authorizeRelay(c.Request) {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
-		return
-	}
 	if h == nil || h.Processor == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "observation processor not configured"})
 		return
@@ -26,6 +23,13 @@ func (h *ObservationHandler) Ingest(c *gin.Context) {
 	raw, err := c.GetRawData()
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_request"})
+		return
+	}
+	var peek struct {
+		TenantID string `json:"tenant_id"`
+	}
+	_ = json.Unmarshal(raw, &peek)
+	if _, ok := relayTenantMustMatch(c, peek.TenantID); !ok {
 		return
 	}
 	result, err := h.Processor.ApplyBytes(c.Request.Context(), raw)

@@ -13,8 +13,8 @@ type PayoutHandler struct {
 }
 
 func (h *PayoutHandler) Get(c *gin.Context) {
-	if !authorizeRelay(c.Request) {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+	tenantID, ok := relayTenantMustMatch(c, c.Query("tenant_id"))
+	if !ok {
 		return
 	}
 	if h == nil || h.Store == nil {
@@ -22,7 +22,6 @@ func (h *PayoutHandler) Get(c *gin.Context) {
 		return
 	}
 	payoutID := c.Param("payout_id")
-	tenantID := c.Query("tenant_id")
 	connectorID := c.Query("connector_id")
 	if payoutID == "" || tenantID == "" || connectorID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "payout_id, tenant_id and connector_id are required"})

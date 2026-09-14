@@ -47,6 +47,21 @@ export type FinanceSummary = {
   payout_kpis?: FinancePayoutKpis
 }
 
+export type FinanceBankTxn = {
+  id: string
+  account_id?: string
+  bank_txn_id?: string
+  utr?: string
+  description?: string
+  currency?: string
+  credit_minor?: number
+  debit_minor?: number
+  credit_debit?: string
+  value_date?: string
+  recon_result?: FinanceReconResult
+  recon_reason?: string
+}
+
 export type FinanceCashPosition = {
   gross_captured_minor: number
   settlement_expected_net_minor: number

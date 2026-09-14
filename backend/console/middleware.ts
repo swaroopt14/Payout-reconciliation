@@ -25,6 +25,8 @@ function isCustomerConsolePath(pathname: string) {
     pathname.startsWith('/exceptions') ||
     pathname.startsWith('/reconciliation') ||
     pathname.startsWith('/cash-position') ||
+    pathname.startsWith('/bank-statements') ||
+    pathname.startsWith('/settlements') ||
     pathname.startsWith('/investigations') ||
     pathname.startsWith('/evaluation') ||
     pathname.startsWith('/transactions') ||
@@ -111,6 +113,10 @@ export const config = {
     '/reconciliation/:path*',
     '/cash-position',
     '/cash-position/:path*',
+    '/bank-statements',
+    '/bank-statements/:path*',
+    '/settlements',
+    '/settlements/:path*',
     '/investigations',
     '/investigations/:path*',
     '/evaluation',

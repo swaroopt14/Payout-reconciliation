@@ -112,7 +112,7 @@ export function CashPositionSurface() {
           const s = String(r.status || '').toLowerCase()
           return s === 'queued' || s === 'processing' || s === 'pending' || s === 'scheduled'
         })
-        .reduce((sum, r) => s + r.amountMinor, 0),
+        .reduce((sum, r) => sum + r.amountMinor, 0),
     [payouts],
   )
   const expectedIn = cash?.in_flight_minor ?? 0
@@ -163,7 +163,7 @@ export function CashPositionSurface() {
               <h1 className="text-[22px] font-semibold tracking-[-0.02em] text-[#1A1A1A]">Cash Position</h1>
               <InfoDot label="Bank-proven cash, in-flight settlement net, and payout book from recon." />
             </div>
-            <p className={`mt-1 ${RZ_MUTED}`}>Proven bank credit vs expected settlement and open payouts. No forecast.</p>
+            <p className={`mt-1 ${RZ_MUTED}`}>Proven bank credit vs derived settlement net and open payouts. No forecast.</p>
           </div>
         </div>
 
@@ -221,9 +221,9 @@ export function CashPositionSurface() {
                     </span>
                   </li>
                   <li className="flex items-center justify-between border-b border-[#F1F5F9] py-2.5">
-                    <span className="text-[#6B6B6B]">Settlement expected net</span>
+                    <span className="text-[#6B6B6B]">Settlement derived net</span>
                     <span className="tabular-nums font-medium text-[#147A3F]">
-                      {formatPaise(cash?.settlement_expected_net_minor, 2)}
+                      {formatPaise(cash?.settlement_derived_net_minor ?? cash?.settlement_expected_net_minor, 2)}
                     </span>
                   </li>
                   <li className="flex items-center justify-between border-b border-[#F1F5F9] py-2.5">

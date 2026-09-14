@@ -19,6 +19,7 @@ func Register(router *gin.Engine, healthHandler *handler.HealthHandler, queryHan
 		protected.POST("/query", queryHandler.Query)
 		if askHandler != nil {
 			protected.POST("/v1/ask-zord/finance/query", askHandler.Query)
+			protected.GET("/v1/ask-zord/finance/answers/:id", askHandler.GetAudit)
 		}
 		if invHandler != nil {
 			protected.POST("/v1/investigations/batch", invHandler.BatchHTTP)

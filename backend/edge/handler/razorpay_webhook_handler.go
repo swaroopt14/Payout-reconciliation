@@ -169,6 +169,12 @@ func (h *Handler) HandleRazorpayWebhook(c *gin.Context) {
 // HandleRazorpayWebhookStatus returns receipt status.
 // GET /v1/webhooks/razorpay/receipt/:receiptID
 func (h *Handler) HandleRazorpayWebhookStatus(c *gin.Context) {
+	tenantIDStr := strings.TrimSpace(c.GetString("tenant_id"))
+	tenantID, err := uuid.Parse(tenantIDStr)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
 	receiptIDStr := c.Param("receiptID")
 	receiptID, err := uuid.Parse(receiptIDStr)
 	if err != nil {
@@ -184,6 +190,10 @@ func (h *Handler) HandleRazorpayWebhookStatus(c *gin.Context) {
 		} else {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
 		}
+		return
+	}
+	if receipt.TenantID != tenantID {
+		c.JSON(http.StatusNotFound, gin.H{"error": "receipt not found"})
 		return
 	}
 
@@ -206,6 +216,12 @@ func (h *Handler) HandleRazorpayWebhookStatus(c *gin.Context) {
 // HandleRazorpayWebhookList returns recent receipts for a connector.
 // GET /v1/webhooks/razorpay/receipts/:connectorID
 func (h *Handler) HandleRazorpayWebhookList(c *gin.Context) {
+	tenantIDStr := strings.TrimSpace(c.GetString("tenant_id"))
+	tenantID, err := uuid.Parse(tenantIDStr)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
 	connectorIDStr := c.Param("connectorID")
 	connectorID, err := uuid.Parse(connectorIDStr)
 	if err != nil {
@@ -214,7 +230,7 @@ func (h *Handler) HandleRazorpayWebhookList(c *gin.Context) {
 	}
 
 	svc := services.NewRazorpayWebhookService()
-	receipts, err := svc.ListReceiptsByConnector(connectorID, 50)
+	receipts, err := svc.ListReceiptsByConnector(tenantID, connectorID, 50)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
 		return
@@ -277,6 +293,11 @@ func (h *Handler) HandleWebhookReceiptIndex(c *gin.Context) {
 	tenantID, err := uuid.Parse(strings.TrimSpace(c.Query("tenant_id")))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid tenant_id"})
+		return
+	}
+	ctxTenant := strings.TrimSpace(c.GetHeader("X-Relay-Tenant-ID"))
+	if ctxTenant == "" || !strings.EqualFold(ctxTenant, tenantID.String()) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "tenant_mismatch"})
 		return
 	}
 	connectorID, err := uuid.Parse(strings.TrimSpace(c.Query("connector_id")))

@@ -30,6 +30,8 @@ function isProtectedPath(pathname: string) {
     pathname.startsWith('/exceptions') ||
     pathname.startsWith('/reconciliation') ||
     pathname.startsWith('/cash-position') ||
+    pathname.startsWith('/bank-statements') ||
+    pathname.startsWith('/settlements') ||
     pathname.startsWith('/investigations') ||
     pathname.startsWith('/evaluation') ||
     pathname.startsWith('/transactions') ||

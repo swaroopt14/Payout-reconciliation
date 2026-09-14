@@ -40,6 +40,7 @@ func TestGetInternalPayout(t *testing.T) {
 	r.GET("/internal/payouts/:payout_id", h.Get)
 	req := httptest.NewRequest(http.MethodGet, "/internal/payouts/pout_ABC?tenant_id=11111111-1111-1111-1111-111111111111&connector_id=22222222-2222-2222-2222-222222222222", nil)
 	req.Header.Set("X-Relay-Token", "secret-token")
+	req.Header.Set("X-Relay-Tenant-ID", "11111111-1111-1111-1111-111111111111")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 	if w.Code != 200 {

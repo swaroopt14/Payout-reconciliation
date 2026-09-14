@@ -67,6 +67,7 @@ type Response struct {
 	Sources      []string      `json:"sources"`
 	Confidence   float64       `json:"confidence"`
 	Limitations  []string      `json:"limitations"`
+	AuditID      string        `json:"audit_id,omitempty"`
 }
 
 type QueryRequest struct {

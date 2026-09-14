@@ -1,5 +1,6 @@
 import { fetchProdJsonGetWithMeta } from './fetchProdJsonGet'
 import type {
+  FinanceBankTxn,
   FinanceCashPosition,
   FinanceCashSchedule,
   FinanceEvaluation,
@@ -41,19 +42,32 @@ export async function getCashInstruments() {
   }>('/api/prod/cash/instruments')
 }
 
+function pageQuery(extra?: Record<string, string>) {
+  const q = new URLSearchParams({ page: '1', page_size: '200' })
+  if (extra) {
+    for (const [k, v] of Object.entries(extra)) {
+      if (v) q.set(k, v)
+    }
+  }
+  return `?${q.toString()}`
+}
+
 export async function getFinanceResults(result?: string) {
-  const suffix = result && result !== 'ALL' ? `?result=${encodeURIComponent(result)}` : ''
+  const extra = result && result !== 'ALL' ? { result } : undefined
   return fetchProdJsonGetWithMeta<{
     records: number
     matched: number
     exceptions: number
     results: FinanceReconRow[]
-  }>(`${BASE}/results${suffix}`)
+    page?: number
+    page_size?: number
+    total?: number
+  }>(`${BASE}/results${pageQuery(extra)}`)
 }
 
 export async function getFinanceInvestigations() {
   return fetchProdJsonGetWithMeta<{ investigations: FinanceInvestigation[] }>(
-    `${BASE}/investigations`,
+    `${BASE}/investigations${pageQuery()}`,
   )
 }
 
@@ -86,8 +100,18 @@ export async function getFinanceExceptions(opts?: { entityType?: string; reason?
   const q = new URLSearchParams()
   if (opts?.entityType) q.set('entity_type', opts.entityType)
   if (opts?.reason) q.set('reason', opts.reason)
-  const suffix = q.toString() ? `?${q.toString()}` : ''
-  return fetchProdJsonGetWithMeta<{ exceptions: FinanceException[] }>(`${BASE}/exceptions${suffix}`)
+  q.set('page', '1')
+  q.set('page_size', '200')
+  return fetchProdJsonGetWithMeta<{ exceptions: FinanceException[] }>(`${BASE}/exceptions?${q.toString()}`)
+}
+
+export async function getFinanceBankTransactions() {
+  return fetchProdJsonGetWithMeta<{
+    bank_transactions: FinanceBankTxn[]
+    page?: number
+    page_size?: number
+    total?: number
+  }>(`${BASE}/bank-transactions${pageQuery()}`)
 }
 
 export async function getFinancePayment(paymentId: string) {
