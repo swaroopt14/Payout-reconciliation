@@ -46,6 +46,8 @@ func TaxBreakdownFor(pay PaymentFact, lines []SettlementLine, fr FinancialResult
 		out.Explained, out.Reason = true, "tax_explained"
 	} else if fee+tax > 0 && net+fee+tax == pay.AmountMinor {
 		out.Explained, out.Reason = true, "fee_tax_explained"
+	} else if fr.Reason == "tax_line_mismatch" {
+		out.Explained, out.Reason = false, "tax_line_mismatch"
 	} else if fr.Result == ResultVariance || fr.Reason == "partial_settlement" || fr.Reason == "amount_mismatch" {
 		out.Explained, out.Reason = false, fr.Reason
 	} else if fr.Result == ResultMatched {

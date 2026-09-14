@@ -32,7 +32,7 @@ func ProjectFinancialInput(obs []SourceObservation) FinancialInput {
 			m := MerchantBookFact{
 				ID: o.ID, InvoiceID: o.InvoiceID, OrderID: o.OrderID,
 				PaymentID: o.EntityID, PayoutID: o.PayoutID, AmountMinor: o.AmountMinor,
-				Currency: o.Currency, DueAt: o.DueAt, BatchID: o.BatchID,
+				Currency: o.Currency, DueAt: o.DueAt, BatchID: o.BatchID, TaxMinor: o.TaxMinor,
 			}
 			in.Merchant = &m
 		case SourceKindDispute:
@@ -44,6 +44,11 @@ func ProjectFinancialInput(obs []SourceObservation) FinancialInput {
 			in.Refunds = append(in.Refunds, RefundFact{
 				ID: o.ID, RefundID: o.ID, PaymentID: o.EntityID,
 				AmountMinor: o.AmountMinor, Currency: o.Currency, ProviderStatus: o.Status,
+			})
+		case SourceKindTax:
+			in.TaxLines = append(in.TaxLines, TaxLineFact{
+				ID: o.ID, PaymentID: o.EntityID, InvoiceID: o.InvoiceID,
+				Component: o.Status, AmountMinor: o.AmountMinor, Currency: o.Currency, HSN: o.OrderID,
 			})
 		case SourceKindEvent:
 			in.Events = append(in.Events, ObservationFact{
@@ -73,6 +78,9 @@ func ReconcileFromSources(obs []SourceObservation, opts FinancialInput) Financia
 	}
 	if len(opts.Disputes) > 0 {
 		in.Disputes = append(in.Disputes, opts.Disputes...)
+	}
+	if len(opts.TaxLines) > 0 {
+		in.TaxLines = append(in.TaxLines, opts.TaxLines...)
 	}
 	if in.Payment.PaymentID != "" {
 		return ReconcilePayment(in)
@@ -136,6 +144,20 @@ func ObservationsFromInput(in FinancialInput) []SourceObservation {
 			AmountMinor: in.Merchant.AmountMinor, Currency: in.Merchant.Currency,
 			InvoiceID: in.Merchant.InvoiceID, OrderID: in.Merchant.OrderID,
 			PayoutID: in.Merchant.PayoutID, DueAt: in.Merchant.DueAt, BatchID: in.Merchant.BatchID,
+			TaxMinor: in.Merchant.TaxMinor,
+		})
+		if gst, ok := invoiceGSTMinor(in.Merchant, nil); ok {
+			obs = append(obs, SourceObservation{
+				Kind: SourceKindTax, ID: in.Merchant.ID + ":gst", EntityID: in.Merchant.PaymentID,
+				InvoiceID: in.Merchant.InvoiceID, AmountMinor: gst, Currency: in.Merchant.Currency,
+				Status: "gst",
+			})
+		}
+	}
+	for _, tl := range in.TaxLines {
+		obs = append(obs, SourceObservation{
+			Kind: SourceKindTax, ID: tl.ID, EntityID: tl.PaymentID, InvoiceID: tl.InvoiceID,
+			AmountMinor: tl.AmountMinor, Currency: tl.Currency, Status: tl.Component, OrderID: tl.HSN,
 		})
 	}
 	return obs
