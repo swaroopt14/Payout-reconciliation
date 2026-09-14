@@ -19,6 +19,18 @@ func TestParseMerchantBooksCSV(t *testing.T) {
 	}
 }
 
+func TestParseMerchantBooksCSVTaxComponents(t *testing.T) {
+	csv := "invoice_id,payment_id,amount_minor,currency,cgst_minor,sgst_minor\nINV-1,pay_001,10000,INR,900,900\n"
+	out, err := ParseMerchantBooksCSV([]byte(csv), "hash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := out.Rows[0].Merchant
+	if row == nil || row.CGSTMinor != 900 || row.SGSTMinor != 900 {
+		t.Fatalf("%+v", row)
+	}
+}
+
 func TestMerchantImportLifecycle(t *testing.T) {
 	store := NewMemoryStore()
 	svc := NewService(store)

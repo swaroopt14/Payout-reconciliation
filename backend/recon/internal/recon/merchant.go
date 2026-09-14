@@ -17,6 +17,12 @@ type MerchantBookFact struct {
 	Currency    string
 	DueAt       time.Time
 	BatchID     string
+	TaxMinor    int64
+	CGSTMinor   int64
+	SGSTMinor   int64
+	IGSTMinor   int64
+	TDSMinor    int64
+	HSN         string
 }
 
 type DisputeFact struct {

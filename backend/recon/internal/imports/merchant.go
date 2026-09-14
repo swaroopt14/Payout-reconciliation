@@ -19,6 +19,12 @@ type MerchantBookRow struct {
 	Currency    string
 	DueAt       time.Time
 	BatchID     string
+	TaxMinor    int64
+	CGSTMinor   int64
+	SGSTMinor   int64
+	IGSTMinor   int64
+	TDSMinor    int64
+	HSN         string
 	SourceRow   int64
 	RowHash     string
 }
@@ -95,15 +101,30 @@ func ParseMerchantBooksCSV(raw []byte, fileHash string) (ParseOutcome, error) {
 			}
 			due = parsed
 		}
+		tax, tok := parseOptionalMinor(get("tax_minor"))
+		cgst, cok := parseOptionalMinor(get("cgst_minor"))
+		sgst, sok := parseOptionalMinor(get("sgst_minor"))
+		igst, iok := parseOptionalMinor(get("igst_minor"))
+		tds, tdok := parseOptionalMinor(get("tds_minor"))
+		if !tok || !cok || !sok || !iok || !tdok {
+			res.Status = RowInvalid
+			res.ErrorCode = ErrInvalidAmount
+			res.ErrorMessage = MessageFor(ErrInvalidAmount)
+			out.Rows = append(out.Rows, res)
+			continue
+		}
 		row := MerchantBookRow{
 			InvoiceID: get("invoice_id"), OrderID: get("order_id"),
 			PaymentID: get("payment_id"), PayoutID: get("payout_id"),
 			AmountMinor: amt, Currency: cur, DueAt: due, BatchID: get("batch_id"),
-			SourceRow: rowNum,
+			TaxMinor: tax, CGSTMinor: cgst, SGSTMinor: sgst, IGSTMinor: igst, TDSMinor: tds,
+			HSN: get("hsn"), SourceRow: rowNum,
 		}
 		row.RowHash = HashCanonical(map[string]any{
 			"invoice_id": row.InvoiceID, "payment_id": row.PaymentID,
 			"payout_id": row.PayoutID, "amount_minor": row.AmountMinor, "currency": row.Currency,
+			"tax_minor": row.TaxMinor, "cgst_minor": row.CGSTMinor, "sgst_minor": row.SGSTMinor,
+			"igst_minor": row.IGSTMinor, "tds_minor": row.TDSMinor,
 		})
 		rawJSON, _ := json.Marshal(row)
 		res.Status = RowValid
@@ -124,6 +145,12 @@ func merchantHeaders(header []string) map[string]int {
 		"amount_minor": "amount_minor", "amount": "amount_minor",
 		"currency": "currency", "due_date": "due_date", "due_at": "due_date",
 		"batch_id": "batch_id",
+		"tax_minor": "tax_minor", "tax": "tax_minor",
+		"cgst_minor": "cgst_minor", "cgst": "cgst_minor",
+		"sgst_minor": "sgst_minor", "sgst": "sgst_minor",
+		"igst_minor": "igst_minor", "igst": "igst_minor",
+		"tds_minor": "tds_minor", "tds": "tds_minor",
+		"hsn": "hsn", "sac": "hsn",
 	}
 	out := map[string]int{}
 	for i, h := range header {
@@ -133,6 +160,21 @@ func merchantHeaders(header []string) map[string]int {
 		}
 	}
 	return out
+}
+
+func parseOptionalMinor(s string) (int64, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, true
+	}
+	if strings.Contains(s, ".") {
+		return 0, false
+	}
+	n, err := strconv.ParseInt(s, 10, 64)
+	if err != nil || n < 0 {
+		return 0, false
+	}
+	return n, true
 }
 
 func parseMerchantDate(s string) (time.Time, bool) {

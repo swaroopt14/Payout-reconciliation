@@ -10,6 +10,7 @@ const (
 	SourceKindSettlement = "settlement"
 	SourceKindBank       = "bank"
 	SourceKindMerchant   = "merchant_books"
+	SourceKindTax        = "tax_line"
 	SourceKindRefund     = "refund"
 	SourceKindDispute    = "dispute"
 	SourceKindEvent      = "observation"
@@ -55,7 +56,7 @@ type LegSpec struct {
 func CollectLegSpecs() []LegSpec {
 	return []LegSpec{
 		{Name: "two_way", Kinds: []string{SourceKindMerchant, SourceKindPayment, SourceKindSettlement}},
-		{Name: "three_way", Kinds: []string{SourceKindMerchant, SourceKindPayment, SourceKindSettlement, SourceKindBank}},
+		{Name: "three_way", Kinds: []string{SourceKindMerchant, SourceKindPayment, SourceKindSettlement, SourceKindBank, SourceKindTax}},
 	}
 }
 
