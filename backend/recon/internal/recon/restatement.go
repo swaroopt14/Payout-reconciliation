@@ -7,6 +7,9 @@ func PickLatestObservations(obs []SourceObservation) []SourceObservation {
 	order := make([]string, 0, len(obs))
 	for _, o := range obs {
 		k := o.Kind + "|" + firstNonEmpty(o.EntityID, o.ID)
+		if o.Kind == SourceKindTax {
+			k = o.Kind + "|" + firstNonEmpty(o.ID, o.EntityID+"|"+o.Status)
+		}
 		if _, seen := best[k]; !seen {
 			order = append(order, k)
 		}

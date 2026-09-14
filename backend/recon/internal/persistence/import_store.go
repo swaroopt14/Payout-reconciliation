@@ -406,19 +406,28 @@ func (s *ImportSQLStore) upsertMerchant(ctx context.Context, tx *sql.Tx, imp imp
 	tag, err := tx.ExecContext(ctx, `
 		INSERT INTO merchant_book_facts (
 			id, tenant_id, connector_id, invoice_id, order_id, payment_id, payout_id,
-			amount_minor, currency, due_at, batch_id, row_hash, import_id, fact_version
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,1)
+			amount_minor, currency, due_at, batch_id, row_hash, import_id, fact_version,
+			tax_minor, cgst_minor, sgst_minor, igst_minor, tds_minor, hsn
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,1,$14,$15,$16,$17,$18,$19)
 		ON CONFLICT (tenant_id, connector_id, row_hash) DO UPDATE SET
 			invoice_id=EXCLUDED.invoice_id, order_id=EXCLUDED.order_id,
 			payment_id=EXCLUDED.payment_id, payout_id=EXCLUDED.payout_id,
 			amount_minor=EXCLUDED.amount_minor, currency=EXCLUDED.currency, due_at=EXCLUDED.due_at,
 			batch_id=EXCLUDED.batch_id, import_id=EXCLUDED.import_id,
+			tax_minor=EXCLUDED.tax_minor, cgst_minor=EXCLUDED.cgst_minor, sgst_minor=EXCLUDED.sgst_minor,
+			igst_minor=EXCLUDED.igst_minor, tds_minor=EXCLUDED.tds_minor, hsn=EXCLUDED.hsn,
 			fact_version=merchant_book_facts.fact_version + 1, updated_at=now()
 		WHERE merchant_book_facts.amount_minor IS DISTINCT FROM EXCLUDED.amount_minor
 			OR merchant_book_facts.currency IS DISTINCT FROM EXCLUDED.currency
-			OR merchant_book_facts.due_at IS DISTINCT FROM EXCLUDED.due_at`,
+			OR merchant_book_facts.due_at IS DISTINCT FROM EXCLUDED.due_at
+			OR merchant_book_facts.tax_minor IS DISTINCT FROM EXCLUDED.tax_minor
+			OR merchant_book_facts.cgst_minor IS DISTINCT FROM EXCLUDED.cgst_minor
+			OR merchant_book_facts.sgst_minor IS DISTINCT FROM EXCLUDED.sgst_minor
+			OR merchant_book_facts.igst_minor IS DISTINCT FROM EXCLUDED.igst_minor
+			OR merchant_book_facts.tds_minor IS DISTINCT FROM EXCLUDED.tds_minor`,
 		id, imp.TenantID, merchantConnectorID(imp.ConnectorID), m.InvoiceID, m.OrderID, m.PaymentID, m.PayoutID,
 		m.AmountMinor, m.Currency, due, m.BatchID, m.RowHash, nullIfEmpty(imp.ID),
+		m.TaxMinor, m.CGSTMinor, m.SGSTMinor, m.IGSTMinor, m.TDSMinor, m.HSN,
 	)
 	if err != nil {
 		return "", err

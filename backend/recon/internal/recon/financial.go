@@ -110,6 +110,7 @@ type FinancialInput struct {
 	Refunds    []RefundFact
 	Merchant   *MerchantBookFact
 	Disputes   []DisputeFact
+	TaxLines   []TaxLineFact
 	Now        time.Time
 	StuckAfter time.Duration
 }
@@ -282,6 +283,14 @@ func reconcileCaptured(out FinancialResult, in FinancialInput, hasPaymentSettlem
 	}
 	if in.Merchant != nil {
 		out.MerchantAgreed = true
+	}
+	if gap, reason, ok := taxLineGap(paymentLines, in.Merchant, in.TaxLines); ok {
+		out.ObservedAmount = settlementTaxMinor(paymentLines)
+		out.VarianceAmount = gap
+		for _, tl := range in.TaxLines {
+			out.EvidenceRefs.Sources = append(out.EvidenceRefs.Sources, SourceRef{Kind: SourceKindTax, ID: tl.ID, Amount: tl.AmountMinor})
+		}
+		return withException(out, ResultVariance, reason, 0.95)
 	}
 	if openChargeback(in.Disputes) {
 		out.ObservedAmount = settlementNet(in.Lines)
@@ -624,6 +633,9 @@ func sourceRefsFromInput(in FinancialInput) []SourceRef {
 	}
 	for _, b := range in.Banks {
 		refs = append(refs, SourceRef{Kind: SourceKindBank, ID: b.ID, Amount: b.CreditMinor})
+	}
+	for _, tl := range in.TaxLines {
+		refs = append(refs, SourceRef{Kind: SourceKindTax, ID: tl.ID, Amount: tl.AmountMinor})
 	}
 	return refs
 }
