@@ -608,7 +608,9 @@ func (s *ReconSQLStore) UpsertRefund(ctx context.Context, tenantID, connectorID 
 func (s *ReconSQLStore) ListMerchantBooks(ctx context.Context, tenantID, connectorID string) ([]recon.MerchantBookFact, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id::text, COALESCE(invoice_id,''), COALESCE(order_id,''), COALESCE(payment_id,''), COALESCE(payout_id,''),
-			amount_minor, currency, due_at, COALESCE(batch_id,'')
+			amount_minor, currency, due_at, COALESCE(batch_id,''),
+			COALESCE(tax_minor,0), COALESCE(cgst_minor,0), COALESCE(sgst_minor,0), COALESCE(igst_minor,0),
+			COALESCE(tds_minor,0), COALESCE(hsn,'')
 		FROM merchant_book_facts
 		WHERE tenant_id=$1 AND (connector_id=$2 OR connector_id='00000000-0000-0000-0000-000000000000')
 		ORDER BY updated_at ASC`, tenantID, connectorID)
@@ -620,7 +622,8 @@ func (s *ReconSQLStore) ListMerchantBooks(ctx context.Context, tenantID, connect
 	for rows.Next() {
 		var f recon.MerchantBookFact
 		var due sql.NullTime
-		if err := rows.Scan(&f.ID, &f.InvoiceID, &f.OrderID, &f.PaymentID, &f.PayoutID, &f.AmountMinor, &f.Currency, &due, &f.BatchID); err != nil {
+		if err := rows.Scan(&f.ID, &f.InvoiceID, &f.OrderID, &f.PaymentID, &f.PayoutID, &f.AmountMinor, &f.Currency, &due, &f.BatchID,
+			&f.TaxMinor, &f.CGSTMinor, &f.SGSTMinor, &f.IGSTMinor, &f.TDSMinor, &f.HSN); err != nil {
 			return nil, err
 		}
 		if due.Valid {

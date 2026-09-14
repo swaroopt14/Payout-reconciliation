@@ -22,6 +22,49 @@ func capturedExactInput() FinancialInput {
 	}
 }
 
+func TestP3_InvoiceTaxLineMismatchIsVariance(t *testing.T) {
+	in := capturedExactInput()
+	in.Merchant = &MerchantBookFact{ID: "inv1", InvoiceID: "INV-1", PaymentID: "pay_001", AmountMinor: 10000, Currency: "INR"}
+	in.TaxLines = []TaxLineFact{
+		{ID: "cgst", PaymentID: "pay_001", Component: "cgst", AmountMinor: 900},
+		{ID: "sgst", PaymentID: "pay_001", Component: "sgst", AmountMinor: 900},
+	}
+	got := ReconcilePayment(in)
+	if got.Result != ResultVariance || got.Reason != "tax_line_mismatch" {
+		t.Fatalf("got %s/%s", got.Result, got.Reason)
+	}
+	if got.VarianceAmount != 1800 {
+		t.Fatalf("var=%d", got.VarianceAmount)
+	}
+}
+
+func TestP3_CGSTSGSTMatchingSettlementTaxStaysMatched(t *testing.T) {
+	in := capturedExactInput()
+	in.Lines[0].TaxMinor = 1800
+	in.Lines[0].CreditMinor = 7928
+	in.Banks[0].CreditMinor = 7928
+	in.Decisions[0].Evidence = map[string]any{"bank_credit_minor": int64(7928)}
+	in.Merchant = &MerchantBookFact{
+		ID: "inv1", InvoiceID: "INV-1", PaymentID: "pay_001", AmountMinor: 10000, Currency: "INR",
+		CGSTMinor: 900, SGSTMinor: 900,
+	}
+	got := ReconcilePayment(in)
+	if got.Result != ResultMatched {
+		t.Fatalf("result=%s reason=%s", got.Result, got.Reason)
+	}
+}
+
+func TestP3_ReconcileFromSourcesTaxKind(t *testing.T) {
+	in := capturedExactInput()
+	in.Merchant = &MerchantBookFact{ID: "inv1", InvoiceID: "INV-1", PaymentID: "pay_001", AmountMinor: 10000, Currency: "INR"}
+	obs := ObservationsFromInput(in)
+	obs = append(obs, SourceObservation{Kind: SourceKindTax, ID: "igst", EntityID: "pay_001", AmountMinor: 1800, Status: "igst"})
+	got := ReconcileFromSources(obs, FinancialInput{Decisions: in.Decisions})
+	if got.Result != ResultVariance || got.Reason != "tax_line_mismatch" {
+		t.Fatalf("got %s/%s", got.Result, got.Reason)
+	}
+}
+
 func TestP2_MerchantAmountMismatchIsVariance(t *testing.T) {
 	in := capturedExactInput()
 	in.Merchant = &MerchantBookFact{ID: "inv1", InvoiceID: "INV-1", PaymentID: "pay_001", AmountMinor: 11000, Currency: "INR"}
