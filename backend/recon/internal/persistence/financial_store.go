@@ -608,6 +608,35 @@ func (s *ReconSQLStore) UpsertRefund(ctx context.Context, tenantID, connectorID 
 	return r, err
 }
 
+func (s *ReconSQLStore) ListMarketplaceSellerPatterns(ctx context.Context, tenantID, connectorID string) (recon.MarketplacePatternResult, error) {
+	// Pattern COUNT/SUM by seller; exclude null/empty seller_id and failed/cancelled
+	// (no money movement) so velocity ≠ cash invent / bank double-count.
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT TRIM(seller_id), COUNT(*)::bigint, COALESCE(SUM(amount_minor), 0)::bigint
+		FROM provider_refund_observations
+		WHERE tenant_id=$1 AND connector_id=$2
+		  AND seller_id IS NOT NULL AND TRIM(seller_id) <> ''
+		  AND LOWER(TRIM(COALESCE(provider_status, ''))) NOT IN ('failed', 'cancelled', 'canceled')
+		GROUP BY TRIM(seller_id)
+		ORDER BY TRIM(seller_id)`, tenantID, connectorID)
+	if err != nil {
+		return recon.MarketplacePatternResult{}, err
+	}
+	defer rows.Close()
+	out := recon.MarketplacePatternResult{TenantID: tenantID, ConnectorID: connectorID}
+	for rows.Next() {
+		var p recon.MarketplaceSellerPattern
+		if err := rows.Scan(&p.SellerID, &p.RefundCount, &p.RefundSumMinor); err != nil {
+			return recon.MarketplacePatternResult{}, err
+		}
+		out.Sellers = append(out.Sellers, p)
+	}
+	if out.Sellers == nil {
+		out.Sellers = []recon.MarketplaceSellerPattern{}
+	}
+	return out, rows.Err()
+}
+
 func (s *ReconSQLStore) ListMerchantBooks(ctx context.Context, tenantID, connectorID string) ([]recon.MerchantBookFact, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id::text, COALESCE(invoice_id,''), COALESCE(order_id,''), COALESCE(payment_id,''), COALESCE(payout_id,''),

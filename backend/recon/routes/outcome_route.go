@@ -77,6 +77,7 @@ func ReconRoutes(router *gin.Engine, h *handlers.ReconHandler, imp *handlers.Imp
 			protected.GET("/reconciliation/tax-breakdown/:payment_id", fin.GetTaxBreakdown)
 			protected.GET("/reconciliation/ledger", fin.GetLedger)
 			protected.GET("/reconciliation/refunds", fin.ListRefunds)
+			protected.GET("/reconciliation/marketplace/seller-patterns", fin.ListMarketplaceSellerPatterns)
 			protected.GET("/reconciliation/exceptions", fin.ListExceptions)
 			protected.GET("/reconciliation/exceptions/:id", fin.GetException)
 			protected.POST("/reconciliation/run", fin.Run)

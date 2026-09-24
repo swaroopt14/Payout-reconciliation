@@ -67,6 +67,7 @@ func financeAllRoutes(t *testing.T) *gin.Engine {
 	r.GET("/v1/reconciliation/tax-breakdown/:payment_id", h.GetTaxBreakdown)
 	r.GET("/v1/reconciliation/ledger", h.GetLedger)
 	r.GET("/v1/reconciliation/refunds", h.ListRefunds)
+	r.GET("/v1/reconciliation/marketplace/seller-patterns", h.ListMarketplaceSellerPatterns)
 	r.GET("/v1/reconciliation/exceptions", h.ListExceptions)
 	r.GET("/v1/reconciliation/exceptions/:id", h.GetException)
 	r.POST("/v1/reconciliation/run", h.Run)
@@ -132,6 +133,7 @@ func TestHTTPSurfaceHitAllFinanceRoutes(t *testing.T) {
 		{"GET", "/v1/reconciliation/tax-breakdown/pay_1" + q, ""},
 		{"GET", "/v1/reconciliation/ledger" + q + "&entity_id=pay_1", ""},
 		{"GET", "/v1/reconciliation/refunds" + q + "&payment_id=pay_1", ""},
+		{"GET", "/v1/reconciliation/marketplace/seller-patterns" + q, ""},
 		{"GET", "/v1/reconciliation/exceptions" + q, ""},
 		{"GET", "/v1/reconciliation/exceptions/ex_missing" + q, ""},
 		{"POST", "/v1/reconciliation/run" + q, `{"tenant_id":"t","connector_id":"c"}`},

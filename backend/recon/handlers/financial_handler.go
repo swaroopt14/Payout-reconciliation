@@ -744,3 +744,23 @@ func (h *FinancialHandler) ListRefunds(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, out)
 }
+
+func (h *FinancialHandler) ListMarketplaceSellerPatterns(c *gin.Context) {
+	tenantID, connectorID, ok := h.scope(c)
+	if !ok {
+		return
+	}
+	if h == nil || h.Service == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "financial recon not configured"})
+		return
+	}
+	res, err := h.Service.MarketplaceSellerPatterns(c.Request.Context(), tenantID, connectorID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if res.Sellers == nil {
+		res.Sellers = []recon.MarketplaceSellerPattern{}
+	}
+	c.JSON(http.StatusOK, res)
+}

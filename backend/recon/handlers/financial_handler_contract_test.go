@@ -45,6 +45,7 @@ func financeRouter(t *testing.T) (*gin.Engine, *recon.MemoryFinancialStore) {
 	r.GET("/v1/reconciliation/tax-breakdown/:payment_id", h.GetTaxBreakdown)
 	r.GET("/v1/reconciliation/ledger", h.GetLedger)
 	r.GET("/v1/reconciliation/refunds", h.ListRefunds)
+	r.GET("/v1/reconciliation/marketplace/seller-patterns", h.ListMarketplaceSellerPatterns)
 	r.GET("/v1/reconciliation/sla-policy", h.SLAPolicy)
 	r.POST("/v1/reconciliation/run", h.Run)
 	r.POST("/v1/reconciliation/batches/:batch_id/reconcile", h.ReconcileBatch)

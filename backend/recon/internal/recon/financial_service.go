@@ -30,6 +30,7 @@ type FinancialStore interface {
 	ListSettlementBankDecisions(ctx context.Context, tenantID, connectorID string) ([]SettlementBankDecision, error)
 	ListRefunds(ctx context.Context, tenantID, connectorID, paymentID string) ([]RefundFact, error)
 	UpsertRefund(ctx context.Context, tenantID, connectorID string, r RefundFact) (RefundFact, error)
+	ListMarketplaceSellerPatterns(ctx context.Context, tenantID, connectorID string) (MarketplacePatternResult, error)
 	ListMerchantBooks(ctx context.Context, tenantID, connectorID string) ([]MerchantBookFact, error)
 	TryLockTenantRun(ctx context.Context, tenantID, connectorID string) (unlock func(), err error)
 	InsertReconciliationRun(ctx context.Context, run ReconciliationRun) (ReconciliationRun, error)
@@ -555,6 +556,17 @@ func (s *FinancialService) Ledger(ctx context.Context, tenantID, connectorID, pa
 
 func (s *FinancialService) ListRefunds(ctx context.Context, tenantID, connectorID, paymentID string) ([]RefundFact, error) {
 	return s.Store.ListRefunds(ctx, tenantID, connectorID, paymentID)
+}
+
+// MarketplaceSellerPatterns returns advisory COUNT/SUM of refunds by seller_id.
+// Pattern ≠ cash; never mutates verdicts or auto-blocks payouts.
+func (s *FinancialService) MarketplaceSellerPatterns(ctx context.Context, tenantID, connectorID string) (MarketplacePatternResult, error) {
+	tenantID = strings.TrimSpace(tenantID)
+	connectorID = strings.TrimSpace(connectorID)
+	if tenantID == "" || connectorID == "" {
+		return MarketplacePatternResult{}, errors.New("tenant_id and connector_id are required")
+	}
+	return s.Store.ListMarketplaceSellerPatterns(ctx, tenantID, connectorID)
 }
 
 func refundsFor(all []RefundFact, paymentID string) []RefundFact {
