@@ -35,11 +35,19 @@ type RefundSink interface {
 	UpsertRefund(ctx context.Context, tenantID, connectorID string, r recon.RefundFact) (recon.RefundFact, error)
 }
 
+// TransferLookup optionally resolves payment→transfers for seller_id enrichment
+// on the API/backfill observe path. Webhook-only leaves SellerID null unless
+// already present on the envelope.
+type TransferLookup interface {
+	ListTransfersForPayment(ctx context.Context, paymentID string) ([]razorpay.TransferResponse, error)
+}
+
 type Processor struct {
-	store   poll.Store
-	truth   *paymenttruth.Processor
-	payouts *payouttruth.Processor
-	Refunds RefundSink
+	store     poll.Store
+	truth     *paymenttruth.Processor
+	payouts   *payouttruth.Processor
+	Refunds   RefundSink
+	Transfers TransferLookup
 }
 
 func NewProcessor(store poll.Store) *Processor {
@@ -113,16 +121,32 @@ func (p *Processor) applyRefundOrPayout(ctx context.Context, env Envelope) (Resu
 		if strings.TrimSpace(env.TenantID) == "" || strings.TrimSpace(env.ConnectorID) == "" {
 			return Result{}, fmt.Errorf("missing tenant_id or connector_id")
 		}
-		saved, err := p.Refunds.UpsertRefund(ctx, env.TenantID, env.ConnectorID, recon.RefundFact{
-			RefundID: item.RefundID, PaymentID: item.PaymentID, AmountMinor: item.AmountMinor,
-			Currency: item.Currency, ProviderStatus: item.ProviderStatus, Source: item.Source,
-		})
+		if err := p.enrichRefundSellerID(ctx, &item); err != nil {
+			return Result{}, err
+		}
+		saved, err := p.Refunds.UpsertRefund(ctx, env.TenantID, env.ConnectorID, MapRefundFact(item))
 		if err != nil {
 			return Result{}, err
 		}
 		return Result{Kind: ResultInserted, RefundID: saved.RefundID, PaymentID: saved.PaymentID, EventType: env.ProviderEventType}, nil
 	}
 	return p.applyPayout(ctx, env)
+}
+
+func (p *Processor) enrichRefundSellerID(ctx context.Context, item *reconRefund) error {
+	if item == nil || strings.TrimSpace(item.SellerID) != "" {
+		return nil
+	}
+	paymentID := strings.TrimSpace(item.PaymentID)
+	if paymentID == "" || p.Transfers == nil {
+		return nil
+	}
+	transfers, err := p.Transfers.ListTransfersForPayment(ctx, paymentID)
+	if err != nil {
+		return err
+	}
+	EnrichRefundWithTransfers(item, transfers)
+	return nil
 }
 
 func (p *Processor) applyPayout(ctx context.Context, env Envelope) (Result, error) {

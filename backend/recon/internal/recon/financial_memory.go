@@ -270,6 +270,7 @@ func (m *MemoryFinancialStore) UpsertRefund(_ context.Context, _, _ string, r Re
 	if r.ID == "" {
 		r.ID = uuid.Must(uuid.NewV7()).String()
 	}
+	r.SellerID = strings.TrimSpace(r.SellerID)
 	for i := range m.Refunds {
 		if m.Refunds[i].RefundID == r.RefundID && r.RefundID != "" {
 			m.Refunds[i] = r

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"zord-outcome-engine/internal/poll"
+	"zord-outcome-engine/internal/poll/providers/razorpay"
 	"zord-outcome-engine/internal/recon"
 	"zord-outcome-engine/models"
 )
@@ -349,5 +350,216 @@ func TestApplyPayoutLateProcessingDoesNotOverwriteProcessed(t *testing.T) {
 		if pay.ProviderStatus != "processed" {
 			t.Fatalf("late processing overwrote processed: %s", pay.ProviderStatus)
 		}
+	}
+}
+
+func TestApplyStoresRefundSellerID(t *testing.T) {
+	store := poll.NewMemoryStore()
+	sink := recon.NewMemoryFinancialStore()
+	p := NewProcessor(store)
+	p.Refunds = sink
+	env := capturedEnvelope(t)
+	env.ProviderEventType = "refund.processed"
+	env.ProviderEntityType = "refund"
+	env.ProviderEntityID = "rfnd_seller"
+	env.PaymentID = "pay_seller"
+	env.Amount = 2200
+	env.SellerID = "  acct_rx  "
+	res, err := p.Apply(context.Background(), env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Kind != ResultInserted {
+		t.Fatalf("%+v", res)
+	}
+	got, err := sink.ListRefunds(context.Background(), env.TenantID, env.ConnectorID, "pay_seller")
+	if err != nil || len(got) != 1 {
+		t.Fatalf("%+v err=%v", got, err)
+	}
+	if got[0].SellerID != "acct_rx" || !got[0].JoinsSellerCluster() {
+		t.Fatalf("seller_id round-trip via ingest: %+v", got[0])
+	}
+}
+
+type stubTransfers struct {
+	items []razorpay.TransferResponse
+	err   error
+	calls []string
+}
+
+func (s *stubTransfers) ListTransfersForPayment(_ context.Context, paymentID string) ([]razorpay.TransferResponse, error) {
+	s.calls = append(s.calls, paymentID)
+	return s.items, s.err
+}
+
+func TestEnrichRefundWithTransfersSetsSellerID(t *testing.T) {
+	item := reconRefund{RefundID: "rfnd_1", PaymentID: "pay_1"}
+	EnrichRefundWithTransfers(&item, []razorpay.TransferResponse{{Recipient: "acc_seller"}})
+	if item.SellerID != "acc_seller" {
+		t.Fatalf("seller_id=%q", item.SellerID)
+	}
+}
+
+func TestEnrichRefundWithTransfersAccountFallback(t *testing.T) {
+	item := reconRefund{RefundID: "rfnd_1", PaymentID: "pay_1"}
+	EnrichRefundWithTransfers(&item, []razorpay.TransferResponse{{Account: "acc_from_create"}})
+	if item.SellerID != "acc_from_create" {
+		t.Fatalf("seller_id=%q", item.SellerID)
+	}
+}
+
+func TestEnrichRefundWithTransfersAbsentLeavesEmpty(t *testing.T) {
+	item := reconRefund{RefundID: "rfnd_1", PaymentID: "pay_1"}
+	EnrichRefundWithTransfers(&item, []razorpay.TransferResponse{{}})
+	if item.SellerID != "" {
+		t.Fatalf("expected empty seller_id, got %q", item.SellerID)
+	}
+	EnrichRefundWithTransfers(&item, nil)
+	if item.SellerID != "" {
+		t.Fatalf("expected empty seller_id, got %q", item.SellerID)
+	}
+}
+
+func TestEnrichRefundWithTransfersDoesNotOverwrite(t *testing.T) {
+	item := reconRefund{RefundID: "rfnd_1", SellerID: "acc_existing"}
+	EnrichRefundWithTransfers(&item, []razorpay.TransferResponse{{Recipient: "acc_other"}})
+	if item.SellerID != "acc_existing" {
+		t.Fatalf("seller_id=%q", item.SellerID)
+	}
+}
+
+func TestNormalizeRefundCopiesEnvelopeSellerID(t *testing.T) {
+	env := capturedEnvelope(t)
+	env.ProviderEventType = "refund.processed"
+	env.ProviderEntityType = "refund"
+	env.ProviderEntityID = "rfnd_1"
+	env.PaymentID = "pay_1"
+	env.SellerID = "  acc_env  "
+	item, ok, err := NormalizeRefund(env)
+	if err != nil || !ok {
+		t.Fatalf("ok=%v err=%v", ok, err)
+	}
+	if item.SellerID != "acc_env" {
+		t.Fatalf("seller_id=%q", item.SellerID)
+	}
+}
+
+func TestNormalizeRefundOmitsSellerIDWhenAbsent(t *testing.T) {
+	env := capturedEnvelope(t)
+	env.ProviderEventType = "refund.processed"
+	env.ProviderEntityType = "refund"
+	env.ProviderEntityID = "rfnd_1"
+	env.PaymentID = "pay_1"
+	item, ok, err := NormalizeRefund(env)
+	if err != nil || !ok {
+		t.Fatalf("ok=%v err=%v", ok, err)
+	}
+	if item.SellerID != "" {
+		t.Fatalf("expected empty, got %q", item.SellerID)
+	}
+	fact := MapRefundFact(item)
+	if fact.SellerID != "" {
+		t.Fatalf("fact seller_id=%q", fact.SellerID)
+	}
+}
+
+func TestApplyRefundEnrichesSellerIDFromTransfers(t *testing.T) {
+	store := poll.NewMemoryStore()
+	sink := recon.NewMemoryFinancialStore()
+	transfers := &stubTransfers{items: []razorpay.TransferResponse{{Recipient: "acc_live"}}}
+	p := NewProcessor(store)
+	p.Refunds = sink
+	p.Transfers = transfers
+	env := capturedEnvelope(t)
+	env.ProviderEventType = "refund.created"
+	env.ProviderEntityType = "refund"
+	env.ProviderEntityID = "rfnd_enrich"
+	env.PaymentID = "pay_enrich"
+	env.Amount = 900
+	res, err := p.Apply(context.Background(), env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Kind != ResultInserted {
+		t.Fatalf("%+v", res)
+	}
+	if len(transfers.calls) != 1 || transfers.calls[0] != "pay_enrich" {
+		t.Fatalf("calls=%v", transfers.calls)
+	}
+	got, err := sink.ListRefunds(context.Background(), env.TenantID, env.ConnectorID, "pay_enrich")
+	if err != nil || len(got) != 1 {
+		t.Fatalf("%+v err=%v", got, err)
+	}
+	if got[0].SellerID != "acc_live" {
+		t.Fatalf("seller_id=%q", got[0].SellerID)
+	}
+}
+
+func TestApplyRefundWebhookWithoutTransfersLeavesSellerIDEmpty(t *testing.T) {
+	store := poll.NewMemoryStore()
+	sink := recon.NewMemoryFinancialStore()
+	p := NewProcessor(store)
+	p.Refunds = sink
+	env := capturedEnvelope(t)
+	env.ProviderEventType = "refund.created"
+	env.ProviderEntityType = "refund"
+	env.ProviderEntityID = "rfnd_wh"
+	env.PaymentID = "pay_wh"
+	env.Amount = 700
+	if _, err := p.Apply(context.Background(), env); err != nil {
+		t.Fatal(err)
+	}
+	got, err := sink.ListRefunds(context.Background(), env.TenantID, env.ConnectorID, "pay_wh")
+	if err != nil || len(got) != 1 {
+		t.Fatalf("%+v err=%v", got, err)
+	}
+	if got[0].SellerID != "" {
+		t.Fatalf("webhook must leave seller_id empty, got %q", got[0].SellerID)
+	}
+}
+
+func TestApplyRefundSkipsTransferLookupWhenEnvelopeHasSellerID(t *testing.T) {
+	store := poll.NewMemoryStore()
+	sink := recon.NewMemoryFinancialStore()
+	transfers := &stubTransfers{items: []razorpay.TransferResponse{{Recipient: "acc_should_not"}}}
+	p := NewProcessor(store)
+	p.Refunds = sink
+	p.Transfers = transfers
+	env := capturedEnvelope(t)
+	env.ProviderEventType = "refund.created"
+	env.ProviderEntityType = "refund"
+	env.ProviderEntityID = "rfnd_preset"
+	env.PaymentID = "pay_preset"
+	env.SellerID = "acc_preset"
+	if _, err := p.Apply(context.Background(), env); err != nil {
+		t.Fatal(err)
+	}
+	if len(transfers.calls) != 0 {
+		t.Fatalf("should not call transfers when seller_id preset, calls=%v", transfers.calls)
+	}
+	got, _ := sink.ListRefunds(context.Background(), env.TenantID, env.ConnectorID, "pay_preset")
+	if len(got) != 1 || got[0].SellerID != "acc_preset" {
+		t.Fatalf("%+v", got)
+	}
+}
+
+func TestApplyRefundTransfersAbsentLeavesEmpty(t *testing.T) {
+	store := poll.NewMemoryStore()
+	sink := recon.NewMemoryFinancialStore()
+	transfers := &stubTransfers{items: []razorpay.TransferResponse{}}
+	p := NewProcessor(store)
+	p.Refunds = sink
+	p.Transfers = transfers
+	env := capturedEnvelope(t)
+	env.ProviderEventType = "refund.created"
+	env.ProviderEntityType = "refund"
+	env.ProviderEntityID = "rfnd_none"
+	env.PaymentID = "pay_none"
+	if _, err := p.Apply(context.Background(), env); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := sink.ListRefunds(context.Background(), env.TenantID, env.ConnectorID, "pay_none")
+	if len(got) != 1 || got[0].SellerID != "" {
+		t.Fatalf("must not invent seller_id: %+v", got)
 	}
 }

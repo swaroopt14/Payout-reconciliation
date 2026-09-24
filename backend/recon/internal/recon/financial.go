@@ -27,10 +27,10 @@ const DefaultStuckAfter = 72 * time.Hour
 const DefaultPayoutSLA = 15 * time.Minute
 
 type EvidenceRefs struct {
-	CanonicalPaymentID       string   `json:"canonical_payment_id,omitempty"`
-	ObservationEventIDs      []string `json:"observation_event_ids,omitempty"`
-	SettlementLineID         string   `json:"settlement_line_id,omitempty"`
-	SettlementBankDecisionID string   `json:"settlement_bank_decision_id,omitempty"`
+	CanonicalPaymentID       string      `json:"canonical_payment_id,omitempty"`
+	ObservationEventIDs      []string    `json:"observation_event_ids,omitempty"`
+	SettlementLineID         string      `json:"settlement_line_id,omitempty"`
+	SettlementBankDecisionID string      `json:"settlement_bank_decision_id,omitempty"`
 	BankObservationID        string      `json:"bank_observation_id,omitempty"`
 	MerchantFactID           string      `json:"merchant_fact_id,omitempty"`
 	PayloadHashes            []string    `json:"payload_hashes,omitempty"`
@@ -75,6 +75,15 @@ type RefundFact struct {
 	Currency       string `json:"currency"`
 	ProviderStatus string `json:"provider_status"`
 	Source         string `json:"source"`
+	// SellerID is optional marketplace seller identity from Connectors/Edge ingest.
+	// Empty/omit means absent: still a normal refund; does not join any seller cluster.
+	SellerID string `json:"seller_id,omitempty"`
+}
+
+// JoinsSellerCluster is the Slice 1 cluster-join predicate for later Marketplace
+// COUNT/SUM. Non-null and non-empty after trim only; never invent a null bucket.
+func (r RefundFact) JoinsSellerCluster() bool {
+	return strings.TrimSpace(r.SellerID) != ""
 }
 
 type PayoutFact struct {

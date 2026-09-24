@@ -565,7 +565,7 @@ func (s *ReconSQLStore) ListInvestigations(ctx context.Context, tenantID, connec
 
 func (s *ReconSQLStore) ListRefunds(ctx context.Context, tenantID, connectorID, paymentID string) ([]recon.RefundFact, error) {
 	q := `
-		SELECT id::text, refund_id, COALESCE(payment_id,''), amount_minor, currency, COALESCE(provider_status,''), COALESCE(source,'')
+		SELECT id::text, refund_id, COALESCE(payment_id,''), amount_minor, currency, COALESCE(provider_status,''), COALESCE(source,''), COALESCE(seller_id,'')
 		FROM provider_refund_observations
 		WHERE tenant_id=$1 AND connector_id=$2`
 	args := []any{tenantID, connectorID}
@@ -581,7 +581,7 @@ func (s *ReconSQLStore) ListRefunds(ctx context.Context, tenantID, connectorID, 
 	var out []recon.RefundFact
 	for rows.Next() {
 		var r recon.RefundFact
-		if err := rows.Scan(&r.ID, &r.RefundID, &r.PaymentID, &r.AmountMinor, &r.Currency, &r.ProviderStatus, &r.Source); err != nil {
+		if err := rows.Scan(&r.ID, &r.RefundID, &r.PaymentID, &r.AmountMinor, &r.Currency, &r.ProviderStatus, &r.Source, &r.SellerID); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
@@ -593,14 +593,17 @@ func (s *ReconSQLStore) UpsertRefund(ctx context.Context, tenantID, connectorID 
 	if r.ID == "" {
 		r.ID = uuid.Must(uuid.NewV7()).String()
 	}
+	r.SellerID = strings.TrimSpace(r.SellerID)
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO provider_refund_observations (
-			id, tenant_id, connector_id, refund_id, payment_id, amount_minor, currency, provider_status, source
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+			id, tenant_id, connector_id, refund_id, payment_id, amount_minor, currency, provider_status, source, seller_id
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
 		ON CONFLICT (tenant_id, connector_id, refund_id) DO UPDATE SET
 			payment_id=EXCLUDED.payment_id, amount_minor=EXCLUDED.amount_minor, currency=EXCLUDED.currency,
-			provider_status=EXCLUDED.provider_status, source=EXCLUDED.source, updated_at=now()`,
-		r.ID, tenantID, connectorID, r.RefundID, nullIfEmpty(r.PaymentID), r.AmountMinor, nzCur(r.Currency), r.ProviderStatus, nzCurSrc(r.Source),
+			provider_status=EXCLUDED.provider_status, source=EXCLUDED.source,
+			seller_id=COALESCE(EXCLUDED.seller_id, provider_refund_observations.seller_id),
+			updated_at=now()`,
+		r.ID, tenantID, connectorID, r.RefundID, nullIfEmpty(r.PaymentID), r.AmountMinor, nzCur(r.Currency), r.ProviderStatus, nzCurSrc(r.Source), nullIfEmpty(r.SellerID),
 	)
 	return r, err
 }

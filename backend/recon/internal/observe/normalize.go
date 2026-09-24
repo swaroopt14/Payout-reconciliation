@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"zord-outcome-engine/internal/poll/providers/razorpay"
+	"zord-outcome-engine/internal/recon"
 )
 
 func isPayoutEvent(eventType, entityType string) bool {
@@ -183,6 +184,7 @@ func NormalizeRefund(env Envelope) (reconRefund, bool, error) {
 		Currency:       cur,
 		ProviderStatus: status,
 		Source:         SourceWebhook,
+		SellerID:       strings.TrimSpace(env.SellerID),
 	}, true, nil
 }
 
@@ -193,4 +195,33 @@ type reconRefund struct {
 	Currency       string
 	ProviderStatus string
 	Source         string
+	SellerID       string
+}
+
+// EnrichRefundWithTransfers sets SellerID from payment→transfers when present.
+// Leaves SellerID untouched when already set or when no transfer recipient/account exists.
+// Never invents a sentinel like "unknown".
+func EnrichRefundWithTransfers(item *reconRefund, transfers []razorpay.TransferResponse) {
+	if item == nil {
+		return
+	}
+	if strings.TrimSpace(item.SellerID) != "" {
+		return
+	}
+	if sid := razorpay.SellerIDFromTransfers(transfers); sid != "" {
+		item.SellerID = sid
+	}
+}
+
+// MapRefundFact maps a normalized refund observation onto recon.RefundFact.
+func MapRefundFact(item reconRefund) recon.RefundFact {
+	return recon.RefundFact{
+		RefundID:       item.RefundID,
+		PaymentID:      item.PaymentID,
+		AmountMinor:    item.AmountMinor,
+		Currency:       item.Currency,
+		ProviderStatus: item.ProviderStatus,
+		Source:         item.Source,
+		SellerID:       strings.TrimSpace(item.SellerID),
+	}
 }
