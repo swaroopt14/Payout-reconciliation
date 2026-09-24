@@ -112,6 +112,86 @@ func TestMarketplacePattern_TenantScoped(t *testing.T) {
 	}
 }
 
+func TestMarketplacePattern_ConnectorScoped(t *testing.T) {
+	store := NewMemoryFinancialStore()
+	ctx := context.Background()
+	tenant := "t1"
+	// Distinct seller refund sums under same tenant, different connectors.
+	_, _ = store.UpsertRefund(ctx, tenant, "c1", RefundFact{
+		RefundID: "rfnd_c1_a", AmountMinor: 1000, ProviderStatus: "processed", SellerID: "S_c1",
+	})
+	_, _ = store.UpsertRefund(ctx, tenant, "c1", RefundFact{
+		RefundID: "rfnd_c1_b", AmountMinor: 500, ProviderStatus: "processed", SellerID: "S_c1",
+	})
+	_, _ = store.UpsertRefund(ctx, tenant, "c2", RefundFact{
+		RefundID: "rfnd_c2_a", AmountMinor: 9999, ProviderStatus: "processed", SellerID: "S_c2",
+	})
+	_, _ = store.UpsertRefund(ctx, tenant, "c2", RefundFact{
+		RefundID: "rfnd_c2_b", AmountMinor: 1, ProviderStatus: "processed", SellerID: "S_shared",
+	})
+	// Same seller_id label under c1 must not leak into c2 aggregates.
+	_, _ = store.UpsertRefund(ctx, tenant, "c1", RefundFact{
+		RefundID: "rfnd_c1_shared", AmountMinor: 42, ProviderStatus: "processed", SellerID: "S_shared",
+	})
+
+	svc := NewFinancialService(store)
+	c1, err := svc.MarketplaceSellerPatterns(ctx, tenant, "c1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c2, err := svc.MarketplaceSellerPatterns(ctx, tenant, "c2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c1.TenantID != tenant || c1.ConnectorID != "c1" {
+		t.Fatalf("c1 scope: %+v", c1)
+	}
+	if c2.TenantID != tenant || c2.ConnectorID != "c2" {
+		t.Fatalf("c2 scope: %+v", c2)
+	}
+
+	byC1 := map[string]MarketplaceSellerPattern{}
+	for _, s := range c1.Sellers {
+		byC1[s.SellerID] = s
+	}
+	byC2 := map[string]MarketplaceSellerPattern{}
+	for _, s := range c2.Sellers {
+		byC2[s.SellerID] = s
+	}
+
+	// c1: S_c1 (1500) + S_shared (42) — never c2's S_c2 / 9999
+	if len(byC1) != 2 {
+		t.Fatalf("c1 want 2 sellers, got %+v", c1.Sellers)
+	}
+	if byC1["S_c1"].RefundCount != 2 || byC1["S_c1"].RefundSumMinor != 1500 {
+		t.Fatalf("c1 S_c1 cluster: %+v", byC1["S_c1"])
+	}
+	if byC1["S_shared"].RefundCount != 1 || byC1["S_shared"].RefundSumMinor != 42 {
+		t.Fatalf("c1 S_shared cluster: %+v", byC1["S_shared"])
+	}
+	if _, leak := byC1["S_c2"]; leak {
+		t.Fatalf("c2 seller leaked into c1: %+v", c1.Sellers)
+	}
+
+	// c2: S_c2 (9999) + S_shared (1) — never c1's S_c1 / 1500
+	if len(byC2) != 2 {
+		t.Fatalf("c2 want 2 sellers, got %+v", c2.Sellers)
+	}
+	if byC2["S_c2"].RefundCount != 1 || byC2["S_c2"].RefundSumMinor != 9999 {
+		t.Fatalf("c2 S_c2 cluster: %+v", byC2["S_c2"])
+	}
+	if byC2["S_shared"].RefundCount != 1 || byC2["S_shared"].RefundSumMinor != 1 {
+		t.Fatalf("c2 S_shared must be connector-local (1), got %+v", byC2["S_shared"])
+	}
+	if _, leak := byC2["S_c1"]; leak {
+		t.Fatalf("c1 seller leaked into c2: %+v", c2.Sellers)
+	}
+	// Cross-connector isolation: same seller_id label must not merge across connectors
+	if byC1["S_shared"].RefundSumMinor == byC2["S_shared"].RefundSumMinor {
+		t.Fatal("connector isolation broken for shared seller_id label")
+	}
+}
+
 func TestMarketplacePattern_FailedCancelledDoNotInflate(t *testing.T) {
 	refunds := []RefundFact{
 		{RefundID: "rfnd_ok", AmountMinor: 1000, ProviderStatus: "processed", SellerID: "S1"},
