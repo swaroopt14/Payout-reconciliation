@@ -26,6 +26,7 @@ type MemoryFinancialStore struct {
 	Investigations []InvestigationRecord
 	Outbox         []models.OutboxRow
 	Refunds        []RefundFact
+	refundScopes   map[string]string // refund_id -> tenant|connector for isolation
 	MerchantBooks  []MerchantBookFact
 	heldRuns       map[string]struct{}
 }
@@ -251,24 +252,39 @@ func (m *MemoryFinancialStore) ListMerchantBooks(context.Context, string, string
 	return append([]MerchantBookFact{}, m.MerchantBooks...), nil
 }
 
-func (m *MemoryFinancialStore) ListRefunds(_ context.Context, _, _, paymentID string) ([]RefundFact, error) {
-	if paymentID == "" {
-		return append([]RefundFact{}, m.Refunds...), nil
-	}
+func refundScopeKey(tenantID, connectorID string) string {
+	return strings.ToLower(strings.TrimSpace(tenantID)) + "|" + strings.ToLower(strings.TrimSpace(connectorID))
+}
+
+func (m *MemoryFinancialStore) ListRefunds(_ context.Context, tenantID, connectorID, paymentID string) ([]RefundFact, error) {
+	scope := refundScopeKey(tenantID, connectorID)
 	var out []RefundFact
 	for _, r := range m.Refunds {
-		if r.PaymentID == paymentID {
-			out = append(out, r)
+		if m.refundScopes != nil {
+			if m.refundScopes[r.RefundID] != scope {
+				continue
+			}
 		}
+		if paymentID != "" && r.PaymentID != paymentID {
+			continue
+		}
+		out = append(out, r)
 	}
 	return out, nil
 }
 
-func (m *MemoryFinancialStore) UpsertRefund(_ context.Context, _, _ string, r RefundFact) (RefundFact, error) {
+func (m *MemoryFinancialStore) UpsertRefund(_ context.Context, tenantID, connectorID string, r RefundFact) (RefundFact, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if r.ID == "" {
 		r.ID = uuid.Must(uuid.NewV7()).String()
+	}
+	r.SellerID = strings.TrimSpace(r.SellerID)
+	if m.refundScopes == nil {
+		m.refundScopes = map[string]string{}
+	}
+	if r.RefundID != "" {
+		m.refundScopes[r.RefundID] = refundScopeKey(tenantID, connectorID)
 	}
 	for i := range m.Refunds {
 		if m.Refunds[i].RefundID == r.RefundID && r.RefundID != "" {
@@ -278,6 +294,20 @@ func (m *MemoryFinancialStore) UpsertRefund(_ context.Context, _, _ string, r Re
 	}
 	m.Refunds = append(m.Refunds, r)
 	return r, nil
+}
+
+// ListMarketplaceSellerPatterns aggregates refund COUNT/SUM by seller for one tenant+connector.
+// Advisory read only — does not mutate cash, verdicts, or payouts.
+func (m *MemoryFinancialStore) ListMarketplaceSellerPatterns(ctx context.Context, tenantID, connectorID string) (MarketplacePatternResult, error) {
+	refunds, err := m.ListRefunds(ctx, tenantID, connectorID, "")
+	if err != nil {
+		return MarketplacePatternResult{}, err
+	}
+	return MarketplacePatternResult{
+		TenantID:    tenantID,
+		ConnectorID: connectorID,
+		Sellers:     AggregateMarketplaceSellerPatterns(refunds),
+	}, nil
 }
 
 func (m *MemoryFinancialStore) InsertMatchOutbox(_ context.Context, row models.OutboxRow) error {

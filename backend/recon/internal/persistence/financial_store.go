@@ -565,7 +565,7 @@ func (s *ReconSQLStore) ListInvestigations(ctx context.Context, tenantID, connec
 
 func (s *ReconSQLStore) ListRefunds(ctx context.Context, tenantID, connectorID, paymentID string) ([]recon.RefundFact, error) {
 	q := `
-		SELECT id::text, refund_id, COALESCE(payment_id,''), amount_minor, currency, COALESCE(provider_status,''), COALESCE(source,'')
+		SELECT id::text, refund_id, COALESCE(payment_id,''), amount_minor, currency, COALESCE(provider_status,''), COALESCE(source,''), COALESCE(seller_id,'')
 		FROM provider_refund_observations
 		WHERE tenant_id=$1 AND connector_id=$2`
 	args := []any{tenantID, connectorID}
@@ -581,7 +581,7 @@ func (s *ReconSQLStore) ListRefunds(ctx context.Context, tenantID, connectorID, 
 	var out []recon.RefundFact
 	for rows.Next() {
 		var r recon.RefundFact
-		if err := rows.Scan(&r.ID, &r.RefundID, &r.PaymentID, &r.AmountMinor, &r.Currency, &r.ProviderStatus, &r.Source); err != nil {
+		if err := rows.Scan(&r.ID, &r.RefundID, &r.PaymentID, &r.AmountMinor, &r.Currency, &r.ProviderStatus, &r.Source, &r.SellerID); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
@@ -593,16 +593,48 @@ func (s *ReconSQLStore) UpsertRefund(ctx context.Context, tenantID, connectorID 
 	if r.ID == "" {
 		r.ID = uuid.Must(uuid.NewV7()).String()
 	}
+	r.SellerID = strings.TrimSpace(r.SellerID)
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO provider_refund_observations (
-			id, tenant_id, connector_id, refund_id, payment_id, amount_minor, currency, provider_status, source
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+			id, tenant_id, connector_id, refund_id, payment_id, amount_minor, currency, provider_status, source, seller_id
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
 		ON CONFLICT (tenant_id, connector_id, refund_id) DO UPDATE SET
 			payment_id=EXCLUDED.payment_id, amount_minor=EXCLUDED.amount_minor, currency=EXCLUDED.currency,
-			provider_status=EXCLUDED.provider_status, source=EXCLUDED.source, updated_at=now()`,
-		r.ID, tenantID, connectorID, r.RefundID, nullIfEmpty(r.PaymentID), r.AmountMinor, nzCur(r.Currency), r.ProviderStatus, nzCurSrc(r.Source),
+			provider_status=EXCLUDED.provider_status, source=EXCLUDED.source,
+			seller_id=COALESCE(EXCLUDED.seller_id, provider_refund_observations.seller_id),
+			updated_at=now()`,
+		r.ID, tenantID, connectorID, r.RefundID, nullIfEmpty(r.PaymentID), r.AmountMinor, nzCur(r.Currency), r.ProviderStatus, nzCurSrc(r.Source), nullIfEmpty(r.SellerID),
 	)
 	return r, err
+}
+
+func (s *ReconSQLStore) ListMarketplaceSellerPatterns(ctx context.Context, tenantID, connectorID string) (recon.MarketplacePatternResult, error) {
+	// Pattern COUNT/SUM by seller; exclude null/empty seller_id and failed/cancelled
+	// (no money movement) so velocity ≠ cash invent / bank double-count.
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT TRIM(seller_id), COUNT(*)::bigint, COALESCE(SUM(amount_minor), 0)::bigint
+		FROM provider_refund_observations
+		WHERE tenant_id=$1 AND connector_id=$2
+		  AND seller_id IS NOT NULL AND TRIM(seller_id) <> ''
+		  AND LOWER(TRIM(COALESCE(provider_status, ''))) NOT IN ('failed', 'cancelled', 'canceled')
+		GROUP BY TRIM(seller_id)
+		ORDER BY TRIM(seller_id)`, tenantID, connectorID)
+	if err != nil {
+		return recon.MarketplacePatternResult{}, err
+	}
+	defer rows.Close()
+	out := recon.MarketplacePatternResult{TenantID: tenantID, ConnectorID: connectorID}
+	for rows.Next() {
+		var p recon.MarketplaceSellerPattern
+		if err := rows.Scan(&p.SellerID, &p.RefundCount, &p.RefundSumMinor); err != nil {
+			return recon.MarketplacePatternResult{}, err
+		}
+		out.Sellers = append(out.Sellers, p)
+	}
+	if out.Sellers == nil {
+		out.Sellers = []recon.MarketplaceSellerPattern{}
+	}
+	return out, rows.Err()
 }
 
 func (s *ReconSQLStore) ListMerchantBooks(ctx context.Context, tenantID, connectorID string) ([]recon.MerchantBookFact, error) {

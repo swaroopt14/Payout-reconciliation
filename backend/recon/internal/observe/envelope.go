@@ -39,6 +39,8 @@ type Envelope struct {
 	ProviderCreatedAt  *time.Time `json:"provider_created_at"`
 	TraceID            string     `json:"trace_id"`
 	PaymentID          string     `json:"payment_id"`
+	// SellerID is optional; set only when Connectors/Edge supply it. Never invent.
+	SellerID           string     `json:"seller_id,omitempty"`
 }
 
 func ParseEnvelope(raw []byte) (Envelope, error) {
