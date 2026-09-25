@@ -4,6 +4,8 @@ import {
   applyRefreshedSessionCookies,
   requireSessionTenantForProdProxy,
 } from '@/services/auth/resolvePayoutTenant.server'
+import { resolveIntelligenceSource } from '@/services/settlementSourceFlag'
+import { labelBuiltResponse } from '@/services/settlementSource.server'
 
 const JSON_NO_STORE = { 'cache-control': 'no-store' } as const
 
@@ -71,8 +73,20 @@ function emptyBatchesResponse(tenantId: string, request: NextRequest) {
 /**
  * Shared forwarder for `/api/prod/intelligence/*` Next routes → zord-intelligence (:8089).
  * Tenant is taken from the signed-in session; client-supplied tenant_id is ignored.
+ * Upstream comes from resolveIntelligenceSource(): the smoke simulator is only used when
+ * CLEARLINE_DEMO_SETTLEMENT_SIMULATOR is on, and then every response is labelled demo.
  */
 export async function forwardIntelligence(request: NextRequest, path: string): Promise<NextResponse> {
+  const intel = resolveIntelligenceSource()
+  const res = await forwardIntelligenceTo(request, path, intel.baseUrl)
+  return labelBuiltResponse(res, intel)
+}
+
+async function forwardIntelligenceTo(
+  request: NextRequest,
+  path: string,
+  baseUrl: string,
+): Promise<NextResponse> {
   const gate = await requireSessionTenantForProdProxy(request)
   if (!gate.ok) return gate.response
   const tenantId = gate.tenantId
@@ -81,7 +95,7 @@ export async function forwardIntelligence(request: NextRequest, path: string): P
   params.delete('tenant_id')
   params.set('tenant_id', tenantId)
 
-  const url = `${BACKEND_SERVICES.INTELLIGENCE.BASE_URL}${path}?${params.toString()}`
+  const url = `${baseUrl}${path}?${params.toString()}`
 
   try {
     const accessCookie = request.cookies.get('zord_access_token')?.value

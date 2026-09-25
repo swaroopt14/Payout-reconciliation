@@ -16,6 +16,7 @@ import (
 	"zord-edge/handler"
 	"zord-edge/internal/health"
 	"zord-edge/logger"
+	"zord-edge/middleware"
 	"zord-edge/routes"
 	"zord-edge/services"
 	"zord-edge/storage"
@@ -68,6 +69,16 @@ func main() {
 
 	gin.SetMode(gin.ReleaseMode)
 	server := gin.Default()
+	// gin trusts every proxy by default, letting clients spoof X-Forwarded-For
+	// and mint fresh per-IP rate-limit keys. Trust only EDGE_TRUSTED_PROXIES
+	// (comma-separated IPs/CIDRs); empty = trust none, ClientIP = RemoteAddr.
+	trustedProxies := middleware.TrustedProxiesFromEnv()
+	if err := middleware.ApplyTrustedProxies(server, trustedProxies); err != nil {
+		logger.Log.Error("invalid EDGE_TRUSTED_PROXIES",
+			slog.String("error", err.Error()))
+		os.Exit(1)
+	}
+	logger.Log.Info("trusted proxies configured", slog.Int("count", len(trustedProxies)))
 	server.Use(
 		otelgin.Middleware("zord-edge"),
 		prometheusMiddleware(),
@@ -170,6 +181,14 @@ func main() {
 	server.POST("/internal/outbox/ack", outboxHandler.Ack)
 	server.POST("/internal/outbox/nack", outboxHandler.Nack)
 	server.GET("/internal/webhooks/receipts/index", h.HandleWebhookReceiptIndex)
+
+	// D52: recon reads per-tenant Razorpay credentials; relay/recon resolve
+	// connector slugs to ids. The credentials route fails closed (503) until
+	// RECON_CREDENTIALS_TOKEN is set and differs from RELAY_AUTH_TOKEN.
+	if _, err := handler.ReconCredentialsToken(); err != nil {
+		logger.Log.Error("internal credentials endpoint disabled", slog.String("reason", err.Error()))
+	}
+	handler.RegisterInternalConnectorRoutes(server, handler.NewInternalConnectorHandler(db.DB))
 
 	logger.Log.Info("starting zord-edge service",
 		slog.String("addr", ":8080"),

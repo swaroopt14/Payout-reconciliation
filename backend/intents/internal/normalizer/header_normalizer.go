@@ -1,14 +1,16 @@
 package normalizer
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
-	"math"
+	"io"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 	"unicode"
+
+	"github.com/shopspring/decimal"
 )
 
 // NormalizationResult is what the normalizer returns.
@@ -41,9 +43,16 @@ type FieldProvenance struct {
 // it passes through with WasNormalized=false and zero overhead.
 func Normalize(rawJSON []byte, tenantSynonyms map[string]string) (*NormalizationResult, error) {
 	// Parse raw JSON into a flat map first
+	// UseNumber keeps numeric literals (e.g. an amount sent as 1.005) as
+	// their exact text instead of decoding them through float64 (D10).
 	var raw map[string]any
-	if err := json.Unmarshal(rawJSON, &raw); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(rawJSON))
+	dec.UseNumber()
+	if err := dec.Decode(&raw); err != nil {
 		return nil, fmt.Errorf("normalizer: invalid JSON: %w", err)
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return nil, fmt.Errorf("normalizer: invalid JSON: trailing data after top-level object")
 	}
 
 	// If already canonical, we still run ensureDefaults to catch missing required fields
@@ -242,15 +251,32 @@ func applyTypeNormalization(canonicalPath string, rawVal any) (any, string) {
 }
 
 // normalizeAmount handles 10.3 amount variants:
-// "1,000.00" / "₹1,000" / "(1000)" / "1,00,000.00" / "1000"
+// "1,000.00" / "₹1,000" / "(1000)" / "1,00,000.00" / "1000" / "Rs. 500"
+//
+// Money path (D10, L3): the value is parsed as an exact decimal from the
+// string — never through float64 — and is never rounded. A value with at most
+// two fractional digits is emitted with exactly two ("100.5" → "100.50"). A
+// value with more precision (e.g. "1.005") is emitted exactly as parsed so the
+// semantic validator's exact sub-paise check rejects it instead of it being
+// silently rounded to a different amount.
 func normalizeAmount(raw string) (string, error) {
 	s := strings.TrimSpace(raw)
 
 	// Negative parentheses: (1000) → -1000
 	negative := false
 	if strings.HasPrefix(s, "(") && strings.HasSuffix(s, ")") {
-		s = s[1 : len(s)-1]
+		s = strings.TrimSpace(s[1 : len(s)-1])
 		negative = true
+	}
+
+	// Drop a leading currency word whose '.' would otherwise survive the
+	// character filter below ("Rs. 500" must not become ".500").
+	lower := strings.ToLower(s)
+	for _, prefix := range []string{"rs.", "rs", "inr", "₹"} {
+		if strings.HasPrefix(lower, prefix) {
+			s = strings.TrimSpace(s[len(prefix):])
+			break
+		}
 	}
 
 	// Strip currency symbols and whitespace
@@ -264,18 +290,20 @@ func normalizeAmount(raw string) (string, error) {
 	// Remove Indian/standard comma grouping
 	s = strings.ReplaceAll(s, ",", "")
 
-	val, err := strconv.ParseFloat(s, 64)
-	if err != nil {
+	d, err := decimal.NewFromString(s)
+	if err != nil || s == "" {
 		return "", fmt.Errorf("cannot parse amount %q", raw)
 	}
 
 	if negative {
-		val = -val
+		d = d.Neg()
 	}
 
-	// Round to 2 decimal places
-	val = math.Round(val*100) / 100
-	return strconv.FormatFloat(val, 'f', 2, 64), nil
+	if d.Equal(d.Truncate(2)) {
+		return d.StringFixed(2), nil
+	}
+	// Sub-paise precision: keep it exact; the validator rejects it.
+	return d.String(), nil
 }
 
 // normalizeCurrency maps common variants to ISO 4217.

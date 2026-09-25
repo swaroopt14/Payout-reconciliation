@@ -27,7 +27,7 @@ type Connector struct {
 	Active              bool          `json:"active" db:"active"`
 	ProviderMode        string        `json:"provider_mode" db:"provider_mode"`
 	ApiKeyRef           *string       `json:"api_key_ref,omitempty" db:"api_key_ref"`
-	ApiSecretRef        *string       `json:"api_secret_ref,omitempty" db:"api_secret_ref"`
+	ApiSecretRef        *string       `json:"-" db:"api_secret_ref"` // enc:v1: sealed tenant key secret; never serialized
 	WebhookSecretRef    *string       `json:"webhook_secret_ref,omitempty" db:"webhook_secret_ref"`
 	ProviderAccountID   *string       `json:"provider_account_id,omitempty" db:"provider_account_id"`
 	LastHealthCheckAt   *time.Time    `json:"last_health_check_at,omitempty" db:"last_health_check_at"`

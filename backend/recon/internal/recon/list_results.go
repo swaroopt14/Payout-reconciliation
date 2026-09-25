@@ -28,6 +28,10 @@ type FinanceListRow struct {
 	Rail             string    `json:"rail,omitempty"`
 	TwoWay           *ReconLeg `json:"two_way,omitempty"`
 	ThreeWay         *ReconLeg `json:"three_way,omitempty"`
+	// SellerID comes only from stored seller facts; empty when unknown (D48).
+	SellerID string `json:"seller_id,omitempty"`
+	// ReasonCode is the recon reason code; separate from Result (the verdict).
+	ReasonCode string `json:"reason_code,omitempty"`
 }
 
 type FinanceListResponse struct {
@@ -65,6 +69,10 @@ func (s *FinancialService) ListFinanceResults(ctx context.Context, tenantID, con
 	for _, fr := range results {
 		byKey[fr.EntityType+"|"+fr.EntityID] = fr
 	}
+	sellers, err := s.storedPaymentSellers(ctx, tenantID, connectorID, "")
+	if err != nil {
+		return out, err
+	}
 	want := strings.ToUpper(strings.TrimSpace(resultFilter))
 	if want == "ALL" {
 		want = ""
@@ -78,7 +86,9 @@ func (s *FinancialService) ListFinanceResults(ctx context.Context, tenantID, con
 		out.Results = append(out.Results, row)
 	}
 	for _, pay := range pays {
-		row := paymentListRow(pay, byKey[EntityPayment+"|"+pay.PaymentID])
+		fr := byKey[EntityPayment+"|"+pay.PaymentID]
+		fr.SellerID = sellers[pay.PaymentID]
+		row := paymentListRow(pay, fr)
 		if want != "" && strings.ToUpper(row.Result) != want {
 			continue
 		}
@@ -198,6 +208,7 @@ func paymentListRow(pay PaymentFact, fr FinancialResult) FinanceListRow {
 		CreatedAt:   unixSeconds(firstTime(pay.ProviderCreatedAt, pay.FirstObservedAt)),
 		Direction:   DirectionInbound,
 		Rail:        fr.Rail,
+		SellerID:    strings.TrimSpace(fr.SellerID),
 	}
 	applyResult(&row, fr, "")
 	if fr.Reason != "not_run" && fr.Result != "" {
@@ -217,6 +228,7 @@ func applyResult(row *FinanceListRow, fr FinancialResult, statusReason string) {
 	}
 	row.Result = fr.Result
 	row.Reason = fr.Reason
+	row.ReasonCode = fr.Reason
 	row.VarianceAmount = fr.VarianceAmount
 	if statusReason != "" {
 		row.ErrorCode = statusReason
@@ -298,6 +310,12 @@ func ReconJSON(fr FinancialResult) any {
 	}
 	if fr.ThreeWay.Result != "" {
 		out["three_way"] = fr.ThreeWay
+	}
+	if code := strings.TrimSpace(fr.Reason); code != "" {
+		out["reason_code"] = code
+	}
+	if seller := strings.TrimSpace(fr.SellerID); seller != "" {
+		out["seller_id"] = seller
 	}
 	return out
 }

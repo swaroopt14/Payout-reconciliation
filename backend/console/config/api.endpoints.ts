@@ -1,6 +1,8 @@
 // Backend API Endpoints Configuration
 // All backend service URLs centralized in one place
 
+import { resolveIntelligenceSource } from '@/services/settlementSourceFlag'
+
 export const BACKEND_SERVICES = {
   // zord-edge: API Gateway (Port 8080)
   EDGE: {
@@ -83,10 +85,11 @@ export const BACKEND_SERVICES = {
 
   // zord-intelligence: KPI dashboards + batch intelligence (Port 8089)
   INTELLIGENCE: {
-    BASE_URL:
-      process.env.ZORD_INTELLIGENCE_URL ||
-      process.env.SMOKE_SIMULATOR_URL ||
-      'http://localhost:8089',
+    // Smoke-simulator fallback only when CLEARLINE_DEMO_SETTLEMENT_SIMULATOR is on (see
+    // services/settlementSourceFlag.ts). Getter so the env is read per request, not at import.
+    get BASE_URL(): string {
+      return resolveIntelligenceSource().baseUrl
+    },
     ENDPOINTS: {
       LEAKAGE: '/v1/intelligence/dashboard/leakage',
       LEAKAGE_EXPOSURE: '/v1/intelligence/timeseries/leakage-exposure',

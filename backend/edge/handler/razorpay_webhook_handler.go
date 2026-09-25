@@ -4,14 +4,16 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
 	"zord-edge/db"
+	"zord-edge/internal/secretbox"
+	"zord-edge/internal/tenantsecret"
 	"zord-edge/logger"
 	"zord-edge/model"
 	"zord-edge/services"
@@ -71,8 +73,24 @@ func (h *Handler) HandleRazorpayWebhook(c *gin.Context) {
 	}
 
 	tenantID, providerMode, webhookSecret, err := h.lookupRazorpayConnector(connectorID)
+	if err == nil && webhookSecret == "" {
+		err = tenantsecret.ErrNoTenantSecret
+	}
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "connector not found"})
+		status, code := secretLookupStatus(err)
+		if code == "" {
+			c.JSON(http.StatusNotFound, gin.H{"error": "connector not found"})
+			return
+		}
+		// Error text names the failure class only; secret values are never logged.
+		logger.Log.Warn("razorpay webhook: rejected, tenant secret unavailable",
+			slog.String("event_id", eventID),
+			slog.String("connector_id", connectorIDStr),
+			slog.String("tenant_id", tenantID.String()),
+			slog.Int("http_status", status),
+			slog.String("error", err.Error()),
+		)
+		c.JSON(status, gin.H{"error": gin.H{"code": code, "message": "webhook cannot be verified for this connector"}})
 		return
 	}
 
@@ -271,17 +289,30 @@ func lookupRazorpayConnectorSQL(connectorID uuid.UUID) (uuid.UUID, string, strin
 		providerMode = "test"
 	}
 
-	webhookSecret := secret.String
-	if webhookSecret == "" && secretRef.Valid {
-		ref := strings.TrimSpace(secretRef.String)
-		if strings.HasPrefix(ref, "env:") {
-			webhookSecret = os.Getenv(strings.TrimPrefix(ref, "env:"))
-		}
-	}
-	if webhookSecret == "" {
-		webhookSecret = os.Getenv("RAZORPAY_WEBHOOK_SECRET")
+	// D32: the tenant's own secret only. connectors.secret is enc:v1:
+	// (decrypted here), else a per-tenant env ref. No RAZORPAY_* fallback.
+	webhookSecret, err := tenantsecret.ResolveWebhookSecret(secret.String, secretRef.String)
+	if err != nil {
+		return tenantID, providerMode, "", err
 	}
 	return tenantID, providerMode, webhookSecret, nil
+}
+
+// secretLookupStatus maps a secret-resolution failure to an HTTP status.
+// No tenant secret (or a shared ref) is 401: the webhook is not verifiable
+// and is rejected without processing. A missing/invalid encryption key or a
+// corrupt stored value is a server misconfiguration: 503, so Razorpay retries
+// once an operator fixes it, and nothing is processed meanwhile.
+func secretLookupStatus(err error) (int, string) {
+	switch {
+	case errors.Is(err, tenantsecret.ErrNoTenantSecret), errors.Is(err, tenantsecret.ErrSharedSecretRef):
+		return http.StatusUnauthorized, "NO_TENANT_WEBHOOK_SECRET"
+	case errors.Is(err, secretbox.ErrMissingKey), errors.Is(err, secretbox.ErrInvalidKey),
+		errors.Is(err, secretbox.ErrLegacyPlaintext), errors.Is(err, secretbox.ErrDecrypt),
+		errors.Is(err, secretbox.ErrMalformed):
+		return http.StatusServiceUnavailable, "WEBHOOK_SECRET_UNAVAILABLE"
+	}
+	return http.StatusNotFound, ""
 }
 
 // HandleWebhookReceiptIndex is GET /internal/webhooks/receipts/index

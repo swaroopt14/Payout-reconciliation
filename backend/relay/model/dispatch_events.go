@@ -6,24 +6,28 @@ import "time"
 // attempting a dispatch. It is the first event in the dispatch lifecycle.
 // No PII. Service 5 consumes this to build its dispatch_index.
 type DispatchCreatedEvent struct {
-	EventID     string                   `json:"event_id"`
-	EventType   string                   `json:"event_type"` // "DispatchCreated"
-	TenantID    string                   `json:"tenant_id"`
-	IntentID    string                   `json:"intent_id"`
-	ContractID  string                   `json:"contract_id"`
-	DispatchID  string                   `json:"dispatch_id"`
-	TraceID     string                   `json:"trace_id"`
+	EventID       string                 `json:"event_id"`
+	EventType     string                 `json:"event_type"` // "DispatchCreated"
+	TenantID      string                 `json:"tenant_id"`
+	IntentID      string                 `json:"intent_id"`
+	ContractID    string                 `json:"contract_id"`
+	DispatchID    string                 `json:"dispatch_id"`
+	TraceID       string                 `json:"trace_id"`
 	SchemaVersion string                 `json:"schema_version"`
-	CreatedAt   time.Time                `json:"created_at"`
-	Payload     DispatchCreatedPayload   `json:"payload"`
+	CreatedAt     time.Time              `json:"created_at"`
+	Payload       DispatchCreatedPayload `json:"payload"`
 }
 
 type DispatchCreatedPayload struct {
-	DispatchID           string               `json:"dispatch_id"`
-	ConnectorID          string               `json:"connector_id"`
-	CorridorID           string               `json:"corridor_id"`
-	AttemptCount         int                  `json:"attempt_count"`
-	CorrelationCarriers  CorrelationCarriers  `json:"correlation_carriers"`
+	DispatchID string `json:"dispatch_id"`
+	// ConnectorID is the tenant's connectors.id UUID (never a slug, never nil).
+	ConnectorID string `json:"connector_id"`
+	// ConnectorRef is the connector slug (e.g. "razorpayx-v1"). Informational
+	// only — never used as a key downstream.
+	ConnectorRef        string              `json:"connector_ref,omitempty"`
+	CorridorID          string              `json:"corridor_id"`
+	AttemptCount        int                 `json:"attempt_count"`
+	CorrelationCarriers CorrelationCarriers `json:"correlation_carriers"`
 }
 
 // CorrelationCarriers are the two fingerprints embedded in the PSP call.
@@ -39,15 +43,15 @@ type CorrelationCarriers struct {
 // before ProviderAcked, we know a PSP call was in-flight for this dispatch_id.
 // Service 4 can recover by querying the PSP using reference_id = dispatch_id.
 type AttemptSentEvent struct {
-	EventID       string           `json:"event_id"`
-	EventType     string           `json:"event_type"` // "AttemptSent"
-	TenantID      string           `json:"tenant_id"`
-	IntentID      string           `json:"intent_id"`
-	ContractID    string           `json:"contract_id"`
-	DispatchID    string           `json:"dispatch_id"`
-	TraceID       string           `json:"trace_id"`
-	SchemaVersion string           `json:"schema_version"`
-	CreatedAt     time.Time        `json:"created_at"`
+	EventID       string             `json:"event_id"`
+	EventType     string             `json:"event_type"` // "AttemptSent"
+	TenantID      string             `json:"tenant_id"`
+	IntentID      string             `json:"intent_id"`
+	ContractID    string             `json:"contract_id"`
+	DispatchID    string             `json:"dispatch_id"`
+	TraceID       string             `json:"trace_id"`
+	SchemaVersion string             `json:"schema_version"`
+	CreatedAt     time.Time          `json:"created_at"`
 	Payload       AttemptSentPayload `json:"payload"`
 }
 
@@ -55,8 +59,10 @@ type AttemptSentEvent struct {
 // CorrelationCarriers must be present so Service 5 can update dispatch_index
 // with the carriers it will use to correlate incoming outcome signals.
 type AttemptSentPayload struct {
-	DispatchID          string              `json:"dispatch_id"`
+	DispatchID string `json:"dispatch_id"`
+	// ConnectorID is the tenant's connectors.id UUID; ConnectorRef the slug.
 	ConnectorID         string              `json:"connector_id"`
+	ConnectorRef        string              `json:"connector_ref,omitempty"`
 	CorridorID          string              `json:"corridor_id"`
 	AttemptCount        int                 `json:"attempt_count"`
 	SentAt              time.Time           `json:"sent_at"`
@@ -90,15 +96,15 @@ type ProviderAckedPayload struct {
 // DispatchGovernanceEvaluatedEvent is emitted after the governance check in Step 1.5.
 // It records what decision was made and why — for audit and replay.
 type DispatchGovernanceEvaluatedEvent struct {
-	EventID       string                            `json:"event_id"`
-	EventType     string                            `json:"event_type"` // "DispatchGovernanceEvaluated"
-	TenantID      string                            `json:"tenant_id"`
-	IntentID      string                            `json:"intent_id"`
-	ContractID    string                            `json:"contract_id"`
-	DispatchID    string                            `json:"dispatch_id"`
-	TraceID       string                            `json:"trace_id"`
-	SchemaVersion string                            `json:"schema_version"`
-	CreatedAt     time.Time                         `json:"created_at"`
+	EventID       string                             `json:"event_id"`
+	EventType     string                             `json:"event_type"` // "DispatchGovernanceEvaluated"
+	TenantID      string                             `json:"tenant_id"`
+	IntentID      string                             `json:"intent_id"`
+	ContractID    string                             `json:"contract_id"`
+	DispatchID    string                             `json:"dispatch_id"`
+	TraceID       string                             `json:"trace_id"`
+	SchemaVersion string                             `json:"schema_version"`
+	CreatedAt     time.Time                          `json:"created_at"`
 	Payload       DispatchGovernanceEvaluatedPayload `json:"payload"`
 }
 
@@ -145,46 +151,46 @@ type DispatchAwaitingProviderSignalEvent struct {
 }
 
 type DispatchAwaitingProviderSignalPayload struct {
-	DispatchID           string    `json:"dispatch_id"`
-	ProviderIdempotencyKey string  `json:"provider_idempotency_key"`
-	Reason               string    `json:"reason"`
-	SentAt               time.Time `json:"sent_at"`
+	DispatchID             string    `json:"dispatch_id"`
+	ProviderIdempotencyKey string    `json:"provider_idempotency_key"`
+	Reason                 string    `json:"reason"`
+	SentAt                 time.Time `json:"sent_at"`
 }
 
 // DispatchRetryScheduledEvent is emitted when Service 4 schedules a retry.
 type DispatchRetryScheduledEvent struct {
-	EventID       string                       `json:"event_id"`
-	EventType     string                       `json:"event_type"` // "DispatchRetryScheduled"
-	TenantID      string                       `json:"tenant_id"`
-	IntentID      string                       `json:"intent_id"`
-	ContractID    string                       `json:"contract_id"`
-	DispatchID    string                       `json:"dispatch_id"`
-	TraceID       string                       `json:"trace_id"`
-	SchemaVersion string                       `json:"schema_version"`
-	CreatedAt     time.Time                    `json:"created_at"`
+	EventID       string                        `json:"event_id"`
+	EventType     string                        `json:"event_type"` // "DispatchRetryScheduled"
+	TenantID      string                        `json:"tenant_id"`
+	IntentID      string                        `json:"intent_id"`
+	ContractID    string                        `json:"contract_id"`
+	DispatchID    string                        `json:"dispatch_id"`
+	TraceID       string                        `json:"trace_id"`
+	SchemaVersion string                        `json:"schema_version"`
+	CreatedAt     time.Time                     `json:"created_at"`
 	Payload       DispatchRetryScheduledPayload `json:"payload"`
 }
 
 type DispatchRetryScheduledPayload struct {
-	DispatchID      string    `json:"dispatch_id"`
-	RetryClass      string    `json:"retry_class"`
-	NextAttemptAt   time.Time `json:"next_attempt_at"`
-	AttemptCount    int       `json:"attempt_count"`
-	FailureReason   string    `json:"failure_reason"`
+	DispatchID    string    `json:"dispatch_id"`
+	RetryClass    string    `json:"retry_class"`
+	NextAttemptAt time.Time `json:"next_attempt_at"`
+	AttemptCount  int       `json:"attempt_count"`
+	FailureReason string    `json:"failure_reason"`
 }
 
 // It carries the failure reason so Service 5 can update dispatch_index.
 type DispatchFailedEvent struct {
-	EventID      string               `json:"event_id"`
-	EventType    string               `json:"event_type"` // "DispatchFailed"
-	TenantID     string               `json:"tenant_id"`
-	IntentID     string               `json:"intent_id"`
-	ContractID   string               `json:"contract_id"`
-	DispatchID   string               `json:"dispatch_id"`
-	TraceID      string               `json:"trace_id"`
-	SchemaVersion string              `json:"schema_version"`
-	CreatedAt    time.Time            `json:"created_at"`
-	Payload      DispatchFailedPayload `json:"payload"`
+	EventID       string                `json:"event_id"`
+	EventType     string                `json:"event_type"` // "DispatchFailed"
+	TenantID      string                `json:"tenant_id"`
+	IntentID      string                `json:"intent_id"`
+	ContractID    string                `json:"contract_id"`
+	DispatchID    string                `json:"dispatch_id"`
+	TraceID       string                `json:"trace_id"`
+	SchemaVersion string                `json:"schema_version"`
+	CreatedAt     time.Time             `json:"created_at"`
+	Payload       DispatchFailedPayload `json:"payload"`
 }
 
 type DispatchFailedPayload struct {

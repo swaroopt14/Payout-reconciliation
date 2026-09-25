@@ -8,15 +8,17 @@ services:
     ports: 
       - "8081:8081" 
     env_file:
-      - .env
+      - path: ./.env
+        required: false
     environment: 
       - KAFKA_BROKERS=broker1:9092,broker2:9093,broker3:9094
-      - KAFKA_TOPIC=z.dispatch.events.v1
+      # Must equal relay relay_loop.dispatch_events_topic (backend/tests/test_topic_alignment.py).
+      - KAFKA_TOPIC=payments.dispatch.events.v1
       - KAFKA_INTENT_TOPIC=payments.intent.events.v1
       - DB_HOST=zord-outcome-postgres
       - DB_PORT=5432 
       - DB_USER=outcome_user 
-      - DB_PASSWORD=outcome_password 
+      - DB_PASSWORD=${RECON_POSTGRES_PASSWORD:?set RECON_POSTGRES_PASSWORD (see backend/recon/.env.example)}
       - DB_NAME=zord_outcome_db 
       - DB_SSLMODE=disable 
       - ENVIRONMENT=production 
@@ -43,7 +45,7 @@ services:
     command: postgres -c 'max_connections=100'
     environment: 
       - POSTGRES_USER=outcome_user 
-      - POSTGRES_PASSWORD=outcome_password 
+      - POSTGRES_PASSWORD=${RECON_POSTGRES_PASSWORD:?set RECON_POSTGRES_PASSWORD}
       - POSTGRES_DB=zord_outcome_db 
     volumes: 
       - postgres_outcome_data:/var/lib/postgresql/data 

@@ -110,6 +110,10 @@ func canonicalIntentFromPayload(payload models.IntentPayload, traceID string) (m
 	if payload.BusinessIdempotencyKey != "" {
 		bizIdemKey = &payload.BusinessIdempotencyKey
 	}
+	var bizIdemKeyV1 *string
+	if payload.BusinessIdempotencyKeyV1 != "" {
+		bizIdemKeyV1 = &payload.BusinessIdempotencyKeyV1
+	}
 
 	return models.CanonicalIntent{
 		IntentID:               intentID,
@@ -131,5 +135,7 @@ func canonicalIntentFromPayload(payload models.IntentPayload, traceID string) (m
 		// ZordSignatureCarrier:   signatureCarrier,
 		SourceRowNum: payload.SourceRowNum,
 		CreatedAt:    createdAt,
+		// Legacy v1 business key (compare-only, Slice 8 v1->v2 transition).
+		BusinessIdempotencyKeyV1: bizIdemKeyV1,
 	}, nil
 }

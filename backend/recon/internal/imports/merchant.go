@@ -26,7 +26,59 @@ type MerchantBookRow struct {
 	TDSMinor    int64
 	HSN         string
 	SourceRow   int64
-	RowHash     string
+	// RowHash is the row identity (B5): invoice/payment/payout id + currency,
+	// NOT the amount, so an edited re-upload maps onto the same fact.
+	RowHash string
+	// LegacyRowHash is the pre-B5 hash (included amount_minor and tax). Kept
+	// so rows stored under the old hash are found, never duplicated.
+	LegacyRowHash string
+	// ReuploadAmountMinor is set when a later upload of the same identity
+	// carried a different amount_minor. The original AmountMinor is kept;
+	// recon surfaces the difference as VARIANCE merchant_amount_changed_on_reupload.
+	ReuploadAmountMinor *int64 `json:",omitempty"`
+}
+
+// MerchantRowIdentityHash is the amount-free identity of a merchant book row.
+// When a row carries no invoice/payment/payout id there is no stable
+// identity, so the amount stays in the hash (two id-less rows with different
+// amounts are different rows).
+func MerchantRowIdentityHash(row MerchantBookRow) string {
+	id := map[string]any{
+		"identity": "merchant_book_v2",
+		"invoice_id": row.InvoiceID, "payment_id": row.PaymentID,
+		"payout_id": row.PayoutID, "currency": row.Currency,
+	}
+	if !row.HasIdentity() {
+		id["amount_minor"] = row.AmountMinor
+	}
+	return HashCanonical(id)
+}
+
+// HasIdentity reports whether the row carries any business id.
+func (r MerchantBookRow) HasIdentity() bool {
+	return r.InvoiceID != "" || r.PaymentID != "" || r.PayoutID != ""
+}
+
+// SameIdentity reports whether two rows are the same merchant book fact.
+func (r MerchantBookRow) SameIdentity(o MerchantBookRow) bool {
+	if r.RowHash != "" && r.RowHash == o.RowHash {
+		return true
+	}
+	if r.LegacyRowHash != "" && (r.LegacyRowHash == o.LegacyRowHash || r.LegacyRowHash == o.RowHash) {
+		return true
+	}
+	return r.HasIdentity() && r.InvoiceID == o.InvoiceID && r.PaymentID == o.PaymentID &&
+		r.PayoutID == o.PayoutID && strings.EqualFold(r.Currency, o.Currency)
+}
+
+// legacyMerchantRowHash reproduces the pre-B5 row hash exactly.
+func legacyMerchantRowHash(row MerchantBookRow) string {
+	return HashCanonical(map[string]any{
+		"invoice_id": row.InvoiceID, "payment_id": row.PaymentID,
+		"payout_id": row.PayoutID, "amount_minor": row.AmountMinor, "currency": row.Currency,
+		"tax_minor": row.TaxMinor, "cgst_minor": row.CGSTMinor, "sgst_minor": row.SGSTMinor,
+		"igst_minor": row.IGSTMinor, "tds_minor": row.TDSMinor,
+	})
 }
 
 func ParseMerchantBooksCSV(raw []byte, fileHash string) (ParseOutcome, error) {
@@ -120,12 +172,8 @@ func ParseMerchantBooksCSV(raw []byte, fileHash string) (ParseOutcome, error) {
 			TaxMinor: tax, CGSTMinor: cgst, SGSTMinor: sgst, IGSTMinor: igst, TDSMinor: tds,
 			HSN: get("hsn"), SourceRow: rowNum,
 		}
-		row.RowHash = HashCanonical(map[string]any{
-			"invoice_id": row.InvoiceID, "payment_id": row.PaymentID,
-			"payout_id": row.PayoutID, "amount_minor": row.AmountMinor, "currency": row.Currency,
-			"tax_minor": row.TaxMinor, "cgst_minor": row.CGSTMinor, "sgst_minor": row.SGSTMinor,
-			"igst_minor": row.IGSTMinor, "tds_minor": row.TDSMinor,
-		})
+		row.RowHash = MerchantRowIdentityHash(row)
+		row.LegacyRowHash = legacyMerchantRowHash(row)
 		rawJSON, _ := json.Marshal(row)
 		res.Status = RowValid
 		res.RowHash = row.RowHash

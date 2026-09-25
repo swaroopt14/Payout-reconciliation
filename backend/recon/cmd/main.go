@@ -139,7 +139,19 @@ func main() {
 	backfillStore := persistence.NewSQLStore(db.DB)
 	edgeURL := os.Getenv("ZORD_EDGE_URL")
 	freshness := poll.NewFreshnessService(backfillStore, poll.NewEdgeReceiptClient(edgeURL, os.Getenv("RELAY_AUTH_TOKEN")))
-	backfillSvc := poll.NewBackfillService(backfillStore, freshness, poll.EnvCredentialResolver{}, func(cfg razorpay.Config) (poll.BackfillProvider, error) {
+	// D52: per-tenant Razorpay credentials come from edge's internal endpoint
+	// (RECON_CREDENTIALS_TOKEN, never the relay token), cached in memory only.
+	// Misconfiguration fails closed: every tenant lookup is "unavailable",
+	// and there is no platform-key fallback.
+	var tenantCredSrc poll.TenantCredentialSource
+	if edgeCreds, err := poll.NewEdgeCredentialClientFromEnv(); err != nil {
+		log.Printf("ERROR recon: tenant credentials disabled (backfill jobs fail CREDENTIALS_UNAVAILABLE, enrichment skipped): %v", err)
+		tenantCredSrc = poll.NewUnavailableCredentialSource("credential client not configured")
+	} else {
+		tenantCredSrc = &poll.CachedCredentialSource{Src: edgeCreds}
+	}
+	tenantCreds := poll.EnvCredentialResolver{Tenant: tenantCredSrc}
+	backfillSvc := poll.NewBackfillService(backfillStore, freshness, tenantCreds, func(cfg razorpay.Config) (poll.BackfillProvider, error) {
 		client, err := razorpay.NewClient(cfg, nil, nil, nil)
 		if err != nil {
 			return nil, err
@@ -153,6 +165,46 @@ func main() {
 	routes.ObservationRoutes(server, &handlers.ObservationHandler{Processor: observationProc})
 	routes.PaymentRoutes(server, &handlers.PaymentHandler{Store: backfillStore})
 	routes.PayoutRoutes(server, &handlers.PayoutHandler{Store: backfillStore})
+	reconStore := persistence.NewReconSQLStore(db.DB)
+	observationProc.Refunds = reconStore
+	// Live marketplace graph: Refunds sink alone does not persist transfer edges.
+	observationProc.Edges = reconStore
+	// D52: transfer enrichment uses each tenant's own key (no platform key).
+	// A tenant without creds is skipped (refund still lands, marked skipped_*)
+	// and re-enriched by the D26 pull once its creds work.
+	tenantTransfers := &observe.TenantTransfers{Resolver: tenantCreds}
+	observationProc.TransfersFor = tenantTransfers.For
+	observationProc.CredentialInvalidator = tenantCreds
+	backfillSvc.ReEnrichSkipped = observationProc.ReEnrichSkipped
+	reconSvc := recon.NewService(reconStore)
+	financialSvc := recon.NewFinancialService(reconStore)
+	importSvc := imports.NewService(persistence.NewImportSQLStore(db.DB))
+	bankIngest := bankingest.NewService(importSvc, reconStore)
+	bankIngest.AfterMatch = func(ctx context.Context, tenantID, connectorID, accountID string) error {
+		_, _, err := financialSvc.Run(ctx, recon.FinancialRunRequest{
+			TenantID: tenantID, ConnectorID: connectorID, AccountID: accountID,
+		})
+		return err
+	}
+	handlers.SetBankIngestService(bankIngest)
+	finHandler := &handlers.FinancialHandler{Service: financialSvc, Store: reconStore}
+	closeStore := &close.Store{DB: db.DB}
+	closeSvc := close.NewService(financialSvc, closeStore, reconStore)
+	closeHandler := &handlers.CloseHandler{Service: closeSvc}
+	routes.ReconRoutes(server, &handlers.ReconHandler{Service: reconSvc, Parser: services.BankStatementParser{}}, &handlers.ImportHandler{
+		Service: importSvc,
+		AfterBankCommit: func(ctx context.Context, tenantID, connectorID, accountID string) error {
+			_, err := bankIngest.Match(ctx, tenantID, connectorID, accountID)
+			return err
+		},
+	}, &handlers.BankIngestHandler{Service: bankIngest}, finHandler, closeHandler)
+
+	// Start the observation and bank consumers only after every sink they
+	// use is wired (observationProc.Refunds/Edges/Transfers above and
+	// handlers.SetBankIngestService). Starting them earlier processed early
+	// events without refund/edge sinks, and the bank handler silently
+	// dropped events while bankIngestService was still nil. Guarded by
+	// TestRecon_SinksWiredBeforeConsumerStart.
 	observationTopic := os.Getenv("KAFKA_OBSERVATION_TOPIC")
 	if strings.TrimSpace(observationTopic) == "" {
 		observationTopic = "payments.ledger.events.v1"
@@ -176,47 +228,6 @@ func main() {
 		}
 	}()
 	log.Printf("Kafka bank statement consumer topic=%s", bankTopic)
-
-	reconStore := persistence.NewReconSQLStore(db.DB)
-	observationProc.Refunds = reconStore
-	// Live marketplace graph: Refunds sink alone does not persist transfer edges.
-	observationProc.Edges = reconStore
-	{
-		mode := os.Getenv("RAZORPAY_MODE")
-		if mode == "" {
-			mode = "test"
-		}
-		cfg, err := poll.EnvCredentialResolver{}.Resolve(context.Background(), "", "", mode)
-		if err != nil {
-			log.Printf("observe: razorpay transfers lookup disabled (seller_id/edges from envelope only): %v", err)
-		} else if rzp, err := razorpay.NewClient(cfg, nil, nil, nil); err != nil {
-			log.Printf("observe: razorpay transfers client init failed: %v", err)
-		} else {
-			observationProc.Transfers = rzp
-		}
-	}
-	reconSvc := recon.NewService(reconStore)
-	financialSvc := recon.NewFinancialService(reconStore)
-	importSvc := imports.NewService(persistence.NewImportSQLStore(db.DB))
-	bankIngest := bankingest.NewService(importSvc, reconStore)
-	bankIngest.AfterMatch = func(ctx context.Context, tenantID, connectorID, accountID string) error {
-		_, _, err := financialSvc.Run(ctx, recon.FinancialRunRequest{
-			TenantID: tenantID, ConnectorID: connectorID, AccountID: accountID,
-		})
-		return err
-	}
-	handlers.SetBankIngestService(bankIngest)
-	finHandler := &handlers.FinancialHandler{Service: financialSvc, Store: reconStore}
-	closeStore := &close.Store{DB: db.DB}
-	closeSvc := close.NewService(financialSvc, closeStore, reconStore)
-	closeHandler := &handlers.CloseHandler{Service: closeSvc}
-	routes.ReconRoutes(server, &handlers.ReconHandler{Service: reconSvc, Parser: services.BankStatementParser{}}, &handlers.ImportHandler{
-		Service: importSvc,
-		AfterBankCommit: func(ctx context.Context, tenantID, connectorID, accountID string) error {
-			_, err := bankIngest.Match(ctx, tenantID, connectorID, accountID)
-			return err
-		},
-	}, &handlers.BankIngestHandler{Service: bankIngest}, finHandler, closeHandler)
 
 	// Readiness endpoint — checks DB connectivity
 	readinessHandler := health.NewReadinessHandler([]health.DependencyCheck{

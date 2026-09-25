@@ -10,7 +10,7 @@ relay:
   shutdown_timeout: 30s       # SIGTERM drain window
 
   operator_api_enabled: true
-  operator_auth_token: "test123"
+  operator_auth_token: "${RELAY_OPERATOR_AUTH_TOKEN}"  # env only (D32)
 kafka:
   brokers: "kafka-broker-1:9092,kafka-broker-2:9092,kafka-broker-3:9092"
 
@@ -36,7 +36,7 @@ kafka:
 services:
   - name: intent-engine
     base_url: http://zord-intent-engine-service:8083
-    auth_token: "dev-dummy-token-123"
+    auth_token: "${RELAY_AUTH_TOKEN}"
     http_timeout: 15s
     default_topic: payments.intent.events.v1
     is_intent: true
@@ -68,21 +68,21 @@ services:
 
   - name: intent-engine-dlq
     base_url: http://zord-intent-engine-service:8083
-    auth_token: "dev-dummy-token-123"
+    auth_token: "${RELAY_AUTH_TOKEN}"
     http_timeout: 15s
     default_topic: payments.intent.dlq
     is_dlq: true
 
   - name: intent-engine-batch
     base_url: http://zord-intent-engine-service:8083
-    auth_token: "dev-dummy-token-123"
+    auth_token: "${RELAY_AUTH_TOKEN}"
     http_timeout: 15s
     default_topic: batch.canonicalization.completed
     is_batch: true
 
   - name: ledger-service
     base_url: http://zord-edge-service:8080
-    auth_token: "dev-dummy-token-123"
+    auth_token: "${RELAY_AUTH_TOKEN}"
     http_timeout: 15s
     default_topic: payments.ledger.events.v1
     is_edge: true
@@ -100,7 +100,7 @@ services:
 
   - name: outcome-engine
     base_url: http://zord-outcome-engine-service:8081
-    auth_token: "dev-dummy-token-123"
+    auth_token: "${RELAY_AUTH_TOKEN}"
     http_timeout: 15s
     # All Merkle leaf-bundle events land on this dedicated topic.
     # zord-evidence consumes it with group: evidence-outcome-consumer-group.
@@ -218,7 +218,7 @@ services:
         topic: "zord.vector.index.request.v1"
   - name: evidence-service
     base_url: http://zord-evidence-service:8088
-    auth_token: "dev-dummy-token-123"
+    auth_token: "${RELAY_AUTH_TOKEN}"
     http_timeout: 15s
     default_topic: evidence.pack.created
     route_allow_list:
@@ -251,7 +251,7 @@ metrics:
 # ── Service 4 own database ──────────────────────────────────────────────────
 # Connection string is injected via env: RELAY_DB_URL (overrides this value).
 db:
-  url: "postgres://relay_user:relay_password@postgres:5432/zord_relay_db?sslmode=disable"
+  url: "${RELAY_DB_URL}"  # required; never commit credentials (D32)
   max_open_conns: 20
   max_idle_conns: 5
 
@@ -272,6 +272,8 @@ dispatch:
   # Toggle dispatch responsibilities (Kafka consumer + dispatch workers/sweepers).
   # true  = dispatch enabled (normal mode)
   # false = disable dispatch; Kafka publish responsibilities continue to run.
+  # D27/D43: stays false until Swaroop turns it on. Guarded by
+  # config/config_test.go (TestRepoConfigKeepsDispatchOff).
   enabled: false
 
   # Kafka consumer configuration for consuming payments.intent.events.v1.
@@ -283,6 +285,11 @@ dispatch:
   # Overridden per-event by payload.beneficiary.instrument.kind.
   connector_id: "razorpayx-v1"
   default_corridor_id: "IMPS"
+
+  # zord-router (rail selector). Container-internal service URL on
+  # zord-shared-network — NOT the host port (host 8091 collides with Airflow).
+  # D28: relay never silently falls back; router unreachable => "needs rail".
+  router_url: "${ROUTER_URL:-http://zord-router:8091}"
 
   # Dispatch worker pool — concurrent PSP calls (Gap 14 fix).
   # Each worker handles one message at a time. Controls max concurrent PSP calls.

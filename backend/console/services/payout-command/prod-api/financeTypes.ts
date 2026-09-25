@@ -24,7 +24,12 @@ export type FinanceException = {
   variance_amount: number
   confidence: number
   evidence_ids?: string[]
-  /** zord-recon evidence refs (e.g. refund / payment / seller sources on refund-graph rows). */
+  /**
+   * Explicit server seller for this exception. zord-recon does not send it yet.
+   * D48: never derive a seller from evidence_refs — empty/absent shows "unknown".
+   */
+  seller_id?: string
+  /** zord-recon evidence refs (refund / payment sources). Not a seller source for the UI (D48). */
   evidence_refs?: FinanceExceptionEvidenceRefs
   created_at?: string
 }
@@ -40,7 +45,15 @@ export type FinanceExceptionEvidenceRefs = {
   [key: string]: unknown
 }
 
+/**
+ * Server payout KPIs (optional on GET /v1/reconciliation/summary).
+ * STATUS: zord-recon (Go) does not send this yet — only the smoke simulator does.
+ * Contract the console expects when Go adds it: INR only, int64 minor units (paise),
+ * payouts only (refund-graph `refund_without_reverse_transfer` rows are exceptions, never counted).
+ */
 export type FinancePayoutKpis = {
+  /** ISO currency; console accepts only INR (absent is treated as INR per D2/D10). */
+  currency?: string
   scored_count: number
   processed_count: number
   processed_amount_minor: number
@@ -397,4 +410,71 @@ export type FinanceEntityTimeline = {
   recon_run: boolean
   reconciliation: FinanceReconOverlay | null
   steps: FinanceTimelineStep[]
+}
+
+// ── Marketplace (zord-recon, advisory / not cash — D20, D21, D22) ─────────────
+
+/** recon.MarketplaceSellerPattern — GET /v1/reconciliation/marketplace/seller-patterns */
+export type FinanceMarketplaceSellerPattern = {
+  seller_id: string
+  refund_count: number
+  refund_sum_minor: number
+}
+
+/** recon.MarketplacePatternResult */
+export type FinanceMarketplaceSellerPatternsResponse = {
+  tenant_id: string
+  connector_id: string
+  sellers: FinanceMarketplaceSellerPattern[]
+}
+
+/** recon.MarketplaceRefundGraphSignal — refund with no reverse transfer edge. Not cash. */
+export type FinanceMarketplaceRefundGraphSignal = {
+  tenant_id?: string
+  connector_id?: string
+  refund_id: string
+  payment_id: string
+  /** Empty → UI shows "unknown" via displaySellerId. */
+  seller_id: string
+  amount_minor: number
+  reason: string
+  provider_status?: string
+  currency?: string
+}
+
+/** recon.MarketplaceRefundGraphResult — GET /v1/reconciliation/marketplace/refund-graph-exceptions */
+export type FinanceMarketplaceRefundGraphResponse = {
+  tenant_id: string
+  connector_id: string
+  signals: FinanceMarketplaceRefundGraphSignal[]
+  not_cash: boolean
+  advisory: boolean
+}
+
+/** recon.MarketplaceVelocityFlag — ops flag only; auto_block_payout is always false (D21). */
+export type FinanceMarketplaceVelocityFlag = {
+  seller_id: string
+  refund_count: number
+  refund_sum_minor: number
+  reason: string
+  ops_flag: boolean
+  audit_note: string
+  hold_recommended: boolean
+  auto_block_payout: boolean
+}
+
+/** recon.MarketplaceVelocityResult — GET /v1/reconciliation/marketplace/velocity-flags */
+export type FinanceMarketplaceVelocityResponse = {
+  tenant_id: string
+  connector_id: string
+  flags: FinanceMarketplaceVelocityFlag[]
+  not_cash: boolean
+  advisory: boolean
+}
+
+/** Query params read by ListMarketplaceVelocityFlags (count_threshold, sum_threshold in paise, hold_enabled). */
+export type FinanceMarketplaceVelocityQuery = {
+  countThreshold?: number
+  sumThresholdMinor?: number
+  holdEnabled?: boolean
 }

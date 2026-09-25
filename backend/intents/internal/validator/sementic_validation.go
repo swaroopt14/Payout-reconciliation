@@ -23,6 +23,13 @@ func validateAmount(value string) error {
 		return semanticError("amount must be greater than zero")
 	}
 
+	// Exact paise check (D10): amount*100 must be an integer. This also
+	// catches exponent forms such as "15e-4" that the '.'-split check below
+	// cannot see.
+	if !new(big.Rat).Mul(amt, big.NewRat(100, 1)).IsInt() {
+		return semanticError("amount must not have more than two decimal places")
+	}
+
 	// 🔐 Check decimal scale (max 2 digits after decimal)
 	parts := strings.Split(value, ".")
 	if len(parts) == 2 {

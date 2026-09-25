@@ -10,7 +10,11 @@ import (
 )
 
 func Routes(router *gin.Engine, h *handler.Handler) {
-	handler.RegisterPublicAuthRoutes(router)
+	// Slice 8: in-memory token buckets (single replica; the store is an
+	// interface so Redis can back it if edge scales out). 429 + Retry-After.
+	rl := middleware.NewEdgeRateLimitsFromEnv()
+
+	handler.RegisterPublicAuthRoutes(router, rl.Login())
 
 	public := router.Group("/v1")
 	{
@@ -24,12 +28,16 @@ func Routes(router *gin.Engine, h *handler.Handler) {
 		admin.POST("/tenantReg", handler.Tenant_Registry)
 		admin.GET("/tenants", handler.ListTenants)
 		admin.GET("/tenants/:tenant_id", handler.GetTenantByID)
+		// Controlled path for PLATFORM_ADMIN / PAYOUT_APPROVER / CONNECTOR_ADMIN (never at signup, D39).
+		admin.POST("/roles/grant", handler.GrantRole)
 	}
 
 	// Webhook routes
 	webhooks := router.Group("/v1/raw/envelopes")
 	webhooks.Use(
+		rl.WebhookPreAuth(), // per IP+connector, before any signature work
 		middleware.VerifyWebhookSignature(),
+		rl.WebhookTenantLimit(), // per verified tenant
 		middleware.TransportValidation(),
 		middleware.MaxRequestBodyBytes(middleware.MaxIngestBodyBytes),
 	)
@@ -80,7 +88,7 @@ func Routes(router *gin.Engine, h *handler.Handler) {
 	// Razorpay webhook ingest stays public (HMAC-verified).
 	razorpayWebhooks := router.Group("/v1/webhooks/razorpay")
 	{
-		razorpayWebhooks.POST("/:connectorID", h.HandleRazorpayWebhook)
+		razorpayWebhooks.POST("/:connectorID", rl.WebhookPreAuth(), rl.WebhookTenantLimit(), h.HandleRazorpayWebhook)
 	}
 
 	jwtProtected := router.Group("/v1")

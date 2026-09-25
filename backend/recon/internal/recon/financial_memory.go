@@ -26,9 +26,10 @@ type MemoryFinancialStore struct {
 	Investigations []InvestigationRecord
 	Outbox         []models.OutboxRow
 	Refunds        []RefundFact
-	refundScopes   map[string]string // refund_id -> tenant|connector for isolation
+	refundScopes   map[string]string // refund row ID -> tenant|connector for isolation
 	TransferEdges  []MarketplaceTransferEdge
 	edgeScopes     map[string]string // transfer_id -> tenant|connector for isolation
+	payoutScopes   map[string]string // payout row ID -> tenant|connector for isolation
 	MerchantBooks  []MerchantBookFact
 	heldRuns       map[string]struct{}
 }
@@ -37,8 +38,36 @@ func NewMemoryFinancialStore() *MemoryFinancialStore {
 	return &MemoryFinancialStore{Events: map[string][]ObservationFact{}, PayoutEvents: map[string][]ObservationFact{}}
 }
 
-func (m *MemoryFinancialStore) ListCanonicalPayouts(context.Context, string, string) ([]PayoutFact, error) {
-	return append([]PayoutFact{}, m.Payouts...), nil
+func (m *MemoryFinancialStore) ListCanonicalPayouts(_ context.Context, tenantID, connectorID string) ([]PayoutFact, error) {
+	if m.payoutScopes == nil {
+		// Legacy unscoped fixtures (tests assign m.Payouts directly).
+		return append([]PayoutFact{}, m.Payouts...), nil
+	}
+	scope := refundScopeKey(tenantID, connectorID)
+	var out []PayoutFact
+	for _, p := range m.Payouts {
+		if m.payoutScopes[p.ID] == scope {
+			out = append(out, p)
+		}
+	}
+	return out, nil
+}
+
+// PutScopedPayout stores a payout under tenant+connector so the memory store
+// mirrors the SQL tenant_id/connector_id filter. Once used, unscoped rows are
+// no longer returned by ListCanonicalPayouts.
+func (m *MemoryFinancialStore) PutScopedPayout(tenantID, connectorID string, p PayoutFact) PayoutFact {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if p.ID == "" {
+		p.ID = uuid.Must(uuid.NewV7()).String()
+	}
+	if m.payoutScopes == nil {
+		m.payoutScopes = map[string]string{}
+	}
+	m.payoutScopes[p.ID] = refundScopeKey(tenantID, connectorID)
+	m.Payouts = append(m.Payouts, p)
+	return p
 }
 
 func (m *MemoryFinancialStore) GetCanonicalPayoutFact(_ context.Context, _, _, payoutID string) (PayoutFact, bool, error) {
@@ -263,7 +292,7 @@ func (m *MemoryFinancialStore) ListRefunds(_ context.Context, tenantID, connecto
 	var out []RefundFact
 	for _, r := range m.Refunds {
 		if m.refundScopes != nil {
-			if m.refundScopes[r.RefundID] != scope {
+			if m.refundScopes[r.ID] != scope {
 				continue
 			}
 		}
@@ -285,15 +314,24 @@ func (m *MemoryFinancialStore) UpsertRefund(_ context.Context, tenantID, connect
 	if m.refundScopes == nil {
 		m.refundScopes = map[string]string{}
 	}
-	if r.RefundID != "" {
-		m.refundScopes[r.RefundID] = refundScopeKey(tenantID, connectorID)
-	}
+	// Mirror UNIQUE (tenant_id, connector_id, refund_id): the same refund id
+	// from webhook and poll (or a replay) updates one row; the same refund id
+	// under another tenant/connector is a different row.
+	scope := refundScopeKey(tenantID, connectorID)
 	for i := range m.Refunds {
-		if m.Refunds[i].RefundID == r.RefundID && r.RefundID != "" {
+		if r.RefundID != "" && m.Refunds[i].RefundID == r.RefundID && m.refundScopes[m.Refunds[i].ID] == scope {
+			r.ID = m.Refunds[i].ID
+			if r.SellerID == "" {
+				r.SellerID = m.Refunds[i].SellerID // COALESCE(EXCLUDED.seller_id, existing)
+			}
+			if r.EnrichmentStatus == "" {
+				r.EnrichmentStatus = m.Refunds[i].EnrichmentStatus // COALESCE(EXCLUDED.enrichment_status, existing)
+			}
 			m.Refunds[i] = r
 			return r, nil
 		}
 	}
+	m.refundScopes[r.ID] = scope
 	m.Refunds = append(m.Refunds, r)
 	return r, nil
 }
@@ -407,4 +445,46 @@ func (m *MemoryFinancialStore) UpsertTransferEdge(_ context.Context, tenantID, c
 	}
 	m.TransferEdges = append(m.TransferEdges, e)
 	return e, nil
+}
+
+// ListSkippedEnrichmentRefunds returns up to limit refunds in one
+// tenant+connector whose transfer enrichment was skipped (D52).
+func (m *MemoryFinancialStore) ListSkippedEnrichmentRefunds(ctx context.Context, tenantID, connectorID string, limit int) ([]RefundFact, error) {
+	all, err := m.ListRefunds(ctx, tenantID, connectorID, "")
+	if err != nil {
+		return nil, err
+	}
+	var out []RefundFact
+	for _, r := range all {
+		if r.EnrichmentSkipped() {
+			out = append(out, r)
+			if limit > 0 && len(out) >= limit {
+				break
+			}
+		}
+	}
+	return out, nil
+}
+
+// CountSkippedEnrichment returns skipped-enrichment refund counts by reason
+// for a tenant (all connectors when connectorID is ""). Data-gap input only.
+func (m *MemoryFinancialStore) CountSkippedEnrichment(_ context.Context, tenantID, connectorID string) (SkippedEnrichmentCounts, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := SkippedEnrichmentCounts{TenantID: tenantID, ConnectorID: connectorID, ByReason: map[string]int64{}}
+	tenant := strings.ToLower(strings.TrimSpace(tenantID))
+	for _, r := range m.Refunds {
+		scope := m.refundScopes[r.ID]
+		if !strings.HasPrefix(scope, tenant+"|") {
+			continue
+		}
+		if connectorID != "" && scope != refundScopeKey(tenantID, connectorID) {
+			continue
+		}
+		if r.EnrichmentSkipped() {
+			out.ByReason[r.EnrichmentStatus]++
+			out.Total++
+		}
+	}
+	return out, nil
 }

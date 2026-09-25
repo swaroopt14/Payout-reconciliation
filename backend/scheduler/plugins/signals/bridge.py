@@ -3,9 +3,9 @@
 Provides a working local trigger path tests (and a future Kafka→Asset
 notifier) can exercise without calling PSP APIs.
 
-Production wiring (TODO where kafka_ready is False):
-  - Kafka consumer / Asset watcher marks the matching Airflow Asset
-  - Or POST Airflow REST trigger for dag_id=signal_recon_dag with conf
+Production wiring: signals.kafka_intake.SignalKafkaIntake consumes the
+kafka_ready topics and calls handle_inbound_event for each record; its
+on_trigger callback hands the payload to signal_recon_dag.
 """
 
 from __future__ import annotations
@@ -137,7 +137,7 @@ def build_run_request(payload: Mapping[str, Any]) -> Dict[str, Any]:
 
 
 def handle_inbound_event(message: Mapping[str, Any], *, when=None, calendar=None) -> Optional[Dict[str, Any]]:
-    """Thin stub entry for Kafka/outbox messages → trigger payload."""
+    """Kafka/outbox message → trigger payload. Fed by signals.kafka_intake."""
     signal = resolve_signal(
         event_type=str(message.get("event_type") or ""),
         provider_event_type=str(message.get("provider_event_type") or ""),

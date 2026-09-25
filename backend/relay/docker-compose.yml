@@ -13,16 +13,25 @@ services:
     environment:
       - RELAY_KAFKA_BROKERS=broker1:9092,broker2:9093,broker3:9094
       - KAFKA_CONSUMER_GROUP=zord-relay-group
-      - RELAY_SERVICES_0_AUTH_TOKEN=dev-dummy-token-123
+      # Secrets come from env / an untracked .env (see .env.example). D32.
+      - RELAY_AUTH_TOKEN=${RELAY_AUTH_TOKEN:?set RELAY_AUTH_TOKEN (see backend/relay/.env.example)}
+      - RELAY_OPERATOR_AUTH_TOKEN=${RELAY_OPERATOR_AUTH_TOKEN:?set RELAY_OPERATOR_AUTH_TOKEN}
       - KAFKA_READY_TOPIC=z.intent.ready.v1
       - KAFKA_DLQ_TOPIC=z.intent.dlq.v1
       - HTTP_PORT=8082
       
-      - DATABASE_URL=postgres://relay_user:relay_password@postgres:5432/zord_relay_db?sslmode=disable
-      - RELAY_DB_URL=postgres://relay_user:relay_password@postgres:5432/zord_relay_db?sslmode=disable
+      - DATABASE_URL=postgres://relay_user:${RELAY_POSTGRES_PASSWORD:?set RELAY_POSTGRES_PASSWORD}@postgres:5432/zord_relay_db?sslmode=disable
+      - RELAY_DB_URL=postgres://relay_user:${RELAY_POSTGRES_PASSWORD:?set RELAY_POSTGRES_PASSWORD}@postgres:5432/zord_relay_db?sslmode=disable
       - RELAY_PSP_BASE_URL=http://localhost:8099
       - RELAY_PSP_TIMEOUT_SECONDS=30
       - RELAY_TOKEN_ENCLAVE_BASE_URL=http://zord-token-enclave:8087
+      # Router (rail selector): container-internal URL, never the host port
+      # (host 8091 is also Airflow). Required in every env or payouts hold (D28).
+      - RELAY_DISPATCH_ROUTER_URL=${ROUTER_URL:?set ROUTER_URL (e.g. http://zord-router:8091)}
+      - ROUTER_URL=${ROUTER_URL:?set ROUTER_URL (e.g. http://zord-router:8091)}
+      - ROUTER_AUTH_TOKEN=${ROUTER_AUTH_TOKEN:?set ROUTER_AUTH_TOKEN (must match zord-router)}
+      # D27: dispatch sends real money and stays OFF until Swaroop turns it on.
+      - RELAY_DISPATCH_ENABLED=false
       - ENVIRONMENT=production
       - SERVICE_NAME=zord-relay
       - RELAY_METRICS_ENABLED=true
@@ -163,7 +172,7 @@ services:
     container_name: zord-relay-postgres
     environment:
       - POSTGRES_USER=relay_user
-      - POSTGRES_PASSWORD=relay_password
+      - POSTGRES_PASSWORD=${RELAY_POSTGRES_PASSWORD:?set RELAY_POSTGRES_PASSWORD}
       - POSTGRES_DB=zord_relay_db
     volumes:
       - postgres_relay_data:/var/lib/postgresql/data

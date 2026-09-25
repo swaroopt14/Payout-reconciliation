@@ -109,7 +109,12 @@ type CanonicalIntent struct {
 	CanonicalIntentCreated     *time.Time `json:"canonical_intent_created,omitempty" db:"canonical_intent_created"`
 
 	// Service 2 mandatory fields
-	BusinessIdempotencyKey    string          `json:"business_idempotency_key,omitempty" db:"business_idempotency_key"`
+	BusinessIdempotencyKey string `json:"business_idempotency_key,omitempty" db:"business_idempotency_key"`
+	// BusinessIdempotencyKeyV1 is the legacy (amount-bearing) key, carried on
+	// the event payload only during the v1->v2 transition so downstream
+	// consumers (recon event_receipt) can accept either generation. Not a
+	// column: the stored key is BusinessIdempotencyKey (v2).
+	BusinessIdempotencyKeyV1  string          `json:"business_idempotency_key_v1,omitempty" db:"-"`
 	BeneficiaryFingerprint    string          `json:"beneficiary_fingerprint,omitempty" db:"beneficiary_fingerprint"`
 	ProofReadinessScore       float64         `json:"proof_readiness_score,omitempty" db:"proof_readiness_score"`
 	MatchabilityScore         float64         `json:"matchability_score,omitempty" db:"matchability_score"`

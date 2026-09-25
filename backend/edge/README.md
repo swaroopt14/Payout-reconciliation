@@ -291,3 +291,55 @@ curl http://localhost:8080/metrics
 ## Support
 
 For issues or questions, refer to the project documentation or contact the development team.
+
+## Connector secrets at rest (D31, D32)
+
+- `CLEARLINE_SECRETS_KEY` (required): standard base64 of 32 random bytes, e.g.
+  `openssl rand -base64 32`. It is used by `internal/secretbox` (AES-256-GCM,
+  random nonce, stored as `enc:v1:<base64(nonce||ciphertext)>`) for
+  `connectors.secret` (webhook secret) and `connectors.api_secret_ref` (tenant
+  Razorpay key secret). If it is missing or invalid, secret writes fail and
+  Razorpay webhooks return 503 without being processed.
+- Legacy plaintext `connectors.secret` values are rejected on read. Run
+  `go run ./cmd/reencrypt-secrets` once per environment (idempotent; prints
+  only a count).
+- There is no fallback to `RAZORPAY_WEBHOOK_SECRET`. A connector with no own
+  secret (or whose `webhook_secret_ref` points at a shared `RAZORPAY_*` var)
+  gets 401 for its webhooks.
+- Replay protection reuses `provider_webhook_receipts`
+  UNIQUE (tenant_id, connector_id, event_id) keyed on `x-razorpay-event-id`. A
+  repeated event id returns 200 `duplicate` and is not re-published.
+- Set a connector's webhook secret: `PUT /v1/connectors/:connectorID/webhook-secret`
+  with `{"webhook_secret": "..."}` (1-256 chars). Auth: Bearer user session
+  with role CONNECTOR_ADMIN or PLATFORM_ADMIN (CUSTOMER_ADMIN, tenant API
+  keys and PAYOUT_APPROVER get 403; CONNECTOR_ADMIN is granted only via
+  `POST /v1/admin/roles/grant`). Every attempt writes an audit event
+  (`auth_audit_events`, `CONNECTOR_WEBHOOK_SECRET_SET:<result>:connector=<id>`,
+  user id; never the secret). The tenant comes from the token; another tenant's
+  connector is 404. Response `{connector_id, webhook_secret_set, updated_at}`
+  never echoes the secret; missing `CLEARLINE_SECRETS_KEY` returns 503 and
+  writes nothing.
+
+## Internal connector routes (D52)
+
+Service-to-service only; both send `Cache-Control: no-store`, require
+`X-Service-Tenant-ID` equal to `:tenant_id` (else 403), are tenant-scoped
+(another tenant's connector is 404) and write one `connector_audit` log line +
+`auth_audit_events` row per call with ids/mode/caller/result only.
+
+- `GET /internal/v1/tenants/:tenant_id/connectors/:connector_id/razorpay-credentials?mode=test|live`
+  (`:connector_id` = `connectors.id` UUID). Auth: `Authorization: Bearer
+  $RECON_CREDENTIALS_TOKEN` only — relay's `RELAY_AUTH_TOKEN` gets 401. Returns
+  `{key_id, key_secret, mode, version}` for an active razorpay connector whose
+  `api_secret_ref` is `enc:v1:`. `env:` refs, legacy plaintext, inactive or
+  missing → 404 `NO_TENANT_CREDENTIALS` (tenant must re-enter keys; no platform
+  fallback). Missing/invalid `CLEARLINE_SECRETS_KEY` → 503. Token unset or equal
+  to `RELAY_AUTH_TOKEN` → 503 (fails closed; logged at startup). `mode=live`
+  requires TLS on the request, or `INTERNAL_TLS_TERMINATED_BY_PROXY=true` plus
+  `X-Forwarded-Proto: https` from a trusted proxy; otherwise 403
+  `LIVE_CREDENTIALS_REQUIRE_TLS`.
+- `GET /internal/v1/tenants/:tenant_id/connectors/resolve?provider=razorpay&connector_id=<slug>`
+  (slug like `con_razorpay_test_1a2b3c4d`). Auth: `X-Relay-Token` or Bearer
+  `RELAY_AUTH_TOKEN`, or Bearer `RECON_CREDENTIALS_TOKEN`. Returns
+  `{id, provider, connector_id, mode, active}`; never a secret or ref. Not found
+  or inactive → 404 `CONNECTOR_NOT_FOUND`.

@@ -14,13 +14,14 @@ services:
       # Port mapping (host:container)
       - "8080:8080" # Map host port 8080 to container port 8080
     env_file:
-      - .env
+      - path: ./.env
+        required: false
     environment:
       # Environment variables for the application
       - DB_HOST=zord-edge-postgres # Database host (references postgres service)
       - DB_PORT=5432 # Database port
       - DB_USER=zord_user # Database username
-      - DB_PASSWORD=zord_password # Database password
+      - DB_PASSWORD=${EDGE_POSTGRES_PASSWORD:?set EDGE_POSTGRES_PASSWORD (see backend/edge/.env.example)}
       - DB_NAME=zord_edge_db # Database name
       - DB_SSLMODE=disable # Disable SSL for local Docker connections
       - ENVIRONMENT=production # Environment setting
@@ -31,6 +32,12 @@ services:
       - SIGNING_KEY_PATH=/run/secrets/ed25519_private.pem
       - VAULT_KEY_ID=key-1234567890
       - OBJECT_STORE_VERSION=v1
+      # Connector/webhook secret encryption key (secretbox enc:v1:). Standard base64
+      # of 32 random bytes (openssl rand -base64 32). Missing = webhooks and
+      # connector creation return 503.
+      - CLEARLINE_SECRETS_KEY=${CLEARLINE_SECRETS_KEY:?set CLEARLINE_SECRETS_KEY (base64 of 32 bytes; see backend/edge/.env.example)}
+      # MinIO/LocalStack need path-style S3 URLs; real AWS keeps virtual-hosted (false).
+      - S3_FORCE_PATH_STYLE=${S3_FORCE_PATH_STYLE:-false}
     depends_on:
       # Service dependencies (wait for health checks)
       postgres:
@@ -52,7 +59,7 @@ services:
     environment:
       # Database configuration
       - POSTGRES_USER=zord_user # Database superuser
-      - POSTGRES_PASSWORD=zord_password # Database password
+      - POSTGRES_PASSWORD=${EDGE_POSTGRES_PASSWORD:?set EDGE_POSTGRES_PASSWORD}
       - POSTGRES_DB=zord_edge_db # Default database to create
     volumes:
       # Volume mounts for data persistence

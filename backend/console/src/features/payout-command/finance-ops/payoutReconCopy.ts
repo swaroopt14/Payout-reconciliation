@@ -1,5 +1,6 @@
 import type {
   FinanceException,
+  FinancePayoutKpis,
   FinancePayment,
   FinancePayout,
   FinanceReconResult,
@@ -481,6 +482,8 @@ export function mapPayoutResponseToReconRow(payout: FinancePayout): FinanceRecon
     result: rec?.result || '',
     variance_amount: rec?.variance_amount ?? 0,
     reason: rec?.reason,
+    reason_code: rec?.reason_code || undefined,
+    seller_id: overlaySellerId(payout),
     status: payout.provider_status || payout.status,
     utr: payout.utr ?? null,
     amount_minor: payout.amount_minor,
@@ -507,6 +510,8 @@ export function mapPaymentResponseToReconRow(payment: FinancePayment): FinanceRe
     result: rec?.result || '',
     variance_amount: rec?.variance_amount ?? 0,
     reason: rec?.reason,
+    reason_code: rec?.reason_code || undefined,
+    seller_id: overlaySellerId(payment),
     status: payment.provider_status || payment.status,
     amount_minor: payment.amount_minor,
     currency: payment.currency,
@@ -623,10 +628,16 @@ export function withoutPendingReverseTransfers<T extends ReverseTransferProbe>(r
   return rows.filter((r) => !isPendingSellerReverseTransfer(r))
 }
 
-/** Seller id from exception evidence_refs.sources (kind "seller"); undefined when absent. */
-export function exceptionSellerId(ex?: Pick<FinanceException, 'evidence_refs'> | null): string | undefined {
-  const hit = ex?.evidence_refs?.sources?.find((s) => String(s?.kind || '').toLowerCase() === 'seller')
-  return hit?.id
+/**
+ * D48 — never guess a seller. Only the explicit server `reconciliation.seller_id` field counts;
+ * nothing is derived from evidence_refs, payments, transfers, amounts or timing.
+ * Empty/absent → undefined → render via displaySellerId ("unknown").
+ */
+export function overlaySellerId(
+  entity?: Pick<FinancePayment, 'reconciliation'> | Pick<FinancePayout, 'reconciliation'> | null,
+): string | undefined {
+  const direct = String(entity?.reconciliation?.seller_id ?? '').trim()
+  return direct || undefined
 }
 
 /** Linked payment id from exception evidence_refs.sources (kind "payment"). */
@@ -720,4 +731,76 @@ export function slaFromPayout(opts: {
   if (st === 'scheduled') return 'Scheduled'
   if (opts.reason === 'payout_processed') return 'Met'
   return '—'
+}
+
+export type PayoutKpisSource = 'server' | 'client'
+
+export type ResolvedPayoutKpis = DemoPayoutKpis & {
+  /** 'server' = summary.payout_kpis from recon; 'client' = sumPayoutKpis over result rows. */
+  source: PayoutKpisSource
+  currency: 'INR'
+  /** Client rows in a non-INR currency, kept out of every INR total. */
+  nonInrExcludedCount: number
+  /** Why server payout_kpis were not used (absent, non_inr_currency, invalid_amounts). */
+  serverRejectedReason?: 'absent' | 'non_inr_currency' | 'invalid_amounts'
+}
+
+function isInr(currency?: string | null): boolean {
+  const c = String(currency ?? '').trim().toUpperCase()
+  return c === '' || c === 'INR'
+}
+
+function isMinorInt(n: unknown): n is number {
+  return typeof n === 'number' && Number.isSafeInteger(n) && n >= 0
+}
+
+/**
+ * Payout KPIs, INR only (EM Slice 8). Prefers server `payout_kpis` when present, INR (or no currency),
+ * and every figure is a non-negative safe integer (D10). Otherwise falls back to the client sum over
+ * INR result rows — which also drops pending seller reverse transfers (sumPayoutKpis).
+ */
+export function resolvePayoutKpis(
+  server: FinancePayoutKpis | null | undefined,
+  summaryCurrency: string | null | undefined,
+  rows: Array<{ status: string; amountMinor: number; currency?: string } & ReverseTransferProbe>,
+): ResolvedPayoutKpis {
+  const inrRows = rows.filter((r) => isInr(r.currency))
+  const nonInrExcludedCount = rows.length - inrRows.length
+  const client = sumPayoutKpis(inrRows)
+
+  let serverRejectedReason: ResolvedPayoutKpis['serverRejectedReason'] = 'absent'
+  if (server) {
+    const figures = [
+      server.scored_count,
+      server.processed_count,
+      server.processed_amount_minor,
+      server.review_count,
+      server.review_amount_minor,
+      server.failed_count,
+      server.failed_amount_minor,
+      server.total_amount_minor,
+    ]
+    if (!isInr(server.currency ?? summaryCurrency)) {
+      serverRejectedReason = 'non_inr_currency'
+    } else if (!figures.every(isMinorInt)) {
+      serverRejectedReason = 'invalid_amounts'
+    } else {
+      return {
+        source: 'server',
+        currency: 'INR',
+        nonInrExcludedCount,
+        // Informational: server payout KPIs are payout-only, so refund-graph rows never enter them.
+        pendingReverseTransferCount: client.pendingReverseTransferCount,
+        scoredCount: server.scored_count,
+        totalAmount: server.total_amount_minor,
+        processedCount: server.processed_count,
+        processedAmount: server.processed_amount_minor,
+        reviewCount: server.review_count,
+        reviewAmount: server.review_amount_minor,
+        failedCount: server.failed_count,
+        failedAmount: server.failed_amount_minor,
+      }
+    }
+  }
+  return { ...client, source: 'client', currency: 'INR', nonInrExcludedCount, serverRejectedReason }
 }

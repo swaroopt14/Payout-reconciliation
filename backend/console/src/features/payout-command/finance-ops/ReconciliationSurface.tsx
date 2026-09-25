@@ -6,9 +6,10 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import {
   createFinanceInvestigation,
   getFinanceResults,
+  getFinanceSummary,
   runFinanceReconciliation,
 } from '@/services/payout-command/prod-api/financeApi'
-import type { FinanceReconRow } from '@/services/payout-command/prod-api/financeTypes'
+import type { FinanceReconRow, FinanceSummary } from '@/services/payout-command/prod-api/financeTypes'
 import {
   HeroAmountCard,
   MiniMetricCard,
@@ -29,7 +30,7 @@ import {
   matchesStatusTab,
   reasonsForStatusTab,
   RECON_STATUS_TABS,
-  sumPayoutKpis,
+  resolvePayoutKpis,
   type PayoutReconDisplayRow,
   type ReconStatusTab,
 } from './payoutReconCopy'
@@ -84,6 +85,7 @@ export function ReconciliationSurface() {
   const [tab, setTab] = useState<ReconStatusTab>('all')
   const [reasonFilter, setReasonFilter] = useState<string>('ALL')
   const [rows, setRows] = useState<FinanceReconRow[]>([])
+  const [summary, setSummary] = useState<FinanceSummary | null>(null)
   const [records, setRecords] = useState(0)
   const [loading, setLoading] = useState(true)
   const [running, setRunning] = useState(false)
@@ -95,7 +97,9 @@ export function ReconciliationSurface() {
   const load = useCallback(async () => {
     setLoading(true)
     setError(null)
-    const res = await getFinanceResults('ALL')
+    const [res, sum] = await Promise.all([getFinanceResults('ALL'), getFinanceSummary()])
+    // Summary is optional here: only used for server payout_kpis (absent → client sum).
+    setSummary(sum.ok ? sum.data : null)
     if (!res.ok || !res.data) {
       setError(res.status === 401 ? 'Sign in to load reconciliation.' : 'Could not load reconciliation.')
       setRows([])
@@ -138,8 +142,9 @@ export function ReconciliationSurface() {
   }, [mappedRows, tab, reasonFilter])
 
   const totals = useMemo(() => {
-    // sumPayoutKpis already drops pending seller reverse transfers (not a cash gap).
-    const kpis = sumPayoutKpis(mappedRows)
+    // INR only. Server summary.payout_kpis when valid; else client sum over INR rows,
+    // which drops pending seller reverse transfers (not a cash gap).
+    const kpis = resolvePayoutKpis(summary?.payout_kpis, summary?.currency, mappedRows)
     const bankProven = mappedRows.filter((r) => isBankProvenReconciled(r) && !isPendingSellerReverseTransfer(r))
     return {
       amount: kpis.totalAmount,
@@ -154,8 +159,11 @@ export function ReconciliationSurface() {
       bankProvenCount: bankProven.length,
       bankProvenAmount: bankProven.reduce((s, r) => s + (r.amountMinor || 0), 0),
       pendingReverseCount: kpis.pendingReverseTransferCount,
+      kpiSource: kpis.source,
+      nonInrExcludedCount: kpis.nonInrExcludedCount,
+      serverRejectedReason: kpis.serverRejectedReason,
     }
-  }, [mappedRows, records])
+  }, [mappedRows, records, summary])
 
   async function runAll() {
     setRunning(true)
@@ -248,6 +256,20 @@ export function ReconciliationSurface() {
             }`}
             info="Sum of payout amounts in the current reconciliation result set. Refunds awaiting a seller reverse transfer are not a cash gap and are excluded."
           />
+          <p className={RZ_MUTED} data-testid="payout-kpi-source">
+            {totals.kpiSource === 'server'
+              ? 'Payout KPIs: server (recon summary.payout_kpis, INR). Bank proven is computed from result rows.'
+              : `Payout KPIs: client sum of INR result rows${
+                  totals.serverRejectedReason === 'non_inr_currency'
+                    ? ' — server payout_kpis ignored (non-INR currency)'
+                    : totals.serverRejectedReason === 'invalid_amounts'
+                      ? ' — server payout_kpis ignored (amounts not integer paise)'
+                      : ''
+                }.`}
+            {totals.nonInrExcludedCount
+              ? ` ${totals.nonInrExcludedCount.toLocaleString('en-IN')} non-INR row(s) excluded from INR totals.`
+              : ''}
+          </p>
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <MiniMetricCard
               label="Processed"

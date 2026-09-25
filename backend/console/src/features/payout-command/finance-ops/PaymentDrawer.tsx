@@ -27,10 +27,10 @@ import {
 import {
   displaySellerId,
   exceptionLinkedPaymentId,
-  exceptionSellerId,
   isBankCreditProven,
   isBankProvenReconciled,
   isPendingSellerReverseTransfer,
+  overlaySellerId,
 } from './payoutReconCopy'
 import { ErrorInvestigationPanel } from './ErrorInvestigationPanel'
 import { buildRazorpayXError } from './razorpayXErrors'
@@ -317,7 +317,7 @@ export function PaymentDrawer({
                   ) : null}
                   {!recon ? (
                     <DrawerField label="Seller ID" mono>
-                      {displaySellerId(exceptionSellerId(exception))}
+                      {displaySellerId(exception.seller_id)}
                     </DrawerField>
                   ) : null}
                 </>
@@ -369,7 +369,12 @@ export function PaymentDrawer({
               ) : null}
               {recon ? (
                 <DrawerField label="Seller ID" mono>
-                  {displaySellerId(recon.seller_id || exceptionSellerId(exception))}
+                  {displaySellerId(overlaySellerId(payout ?? payment))}
+                </DrawerField>
+              ) : null}
+              {recon?.reason_code ? (
+                <DrawerField label="Reason code" mono>
+                  {recon.reason_code}
                 </DrawerField>
               ) : null}
               {recon?.two_way ? (

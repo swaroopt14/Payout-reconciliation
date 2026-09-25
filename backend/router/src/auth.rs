@@ -50,7 +50,7 @@ pub async fn require_auth(
         .filter(|s| !s.is_empty())
         .ok_or_else(|| deny(StatusCode::UNAUTHORIZED, "missing or invalid router credentials"))?;
 
-    let principal = verify_jwt(jwt, secret, &state.config.jwt_issuer)?;
+    let principal = verify_jwt(jwt, secret, &state.config.jwt_issuer, &state.config.jwt_audience)?;
     if let Some(requested) = requested_tenant(req.headers()) {
         if !requested.eq_ignore_ascii_case(&principal.tenant_id) {
             return Err(deny(
@@ -94,10 +94,18 @@ fn header_token_ok(header: Option<&axum::http::HeaderValue>, expected: Option<&s
     constant_eq(got.as_bytes(), expected.as_bytes())
 }
 
-fn verify_jwt(token: &str, secret: &str, issuer: &str) -> Result<Principal, (StatusCode, Json<ErrorBody>)> {
+fn verify_jwt(
+    token: &str,
+    secret: &str,
+    issuer: &str,
+    audience: &str,
+) -> Result<Principal, (StatusCode, Json<ErrorBody>)> {
     let mut validation = Validation::new(Algorithm::HS256);
     validation.set_issuer(&[issuer]);
-    validation.set_required_spec_claims(&["exp", "iss"]);
+    // Edge mints aud = "zord-console". jsonwebtoken rejects any token that
+    // carries `aud` when no audience is configured, so this must be set.
+    validation.set_audience(&[audience]);
+    validation.set_required_spec_claims(&["exp", "iss", "aud"]);
     let data = decode::<AccessClaims>(token, &DecodingKey::from_secret(secret.as_bytes()), &validation)
         .map_err(|_| deny(StatusCode::UNAUTHORIZED, "missing or invalid router credentials"))?;
     if data.claims.tenant_id.trim().is_empty() || data.claims.user_id.trim().is_empty() {

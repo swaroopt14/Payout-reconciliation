@@ -398,43 +398,83 @@ func merchantConnectorID(s string) string {
 
 func (s *ImportSQLStore) upsertMerchant(ctx context.Context, tx *sql.Tx, imp imports.Import, r imports.RowResult) (string, error) {
 	m := r.Merchant
-	id := uuid.Must(uuid.NewV7()).String()
 	var due any
 	if !m.DueAt.IsZero() {
 		due = m.DueAt
 	}
-	tag, err := tx.ExecContext(ctx, `
+	connectorID := merchantConnectorID(imp.ConnectorID)
+	// B5: identity excludes amount_minor. Find an existing fact by the new
+	// identity hash, the legacy (amount-bearing) hash, or the same business
+	// ids + currency, so rows stored under the old hash are never duplicated.
+	var existingID string
+	var existingAmount int64
+	err := tx.QueryRowContext(ctx, merchantIdentityLookupSQL,
+		imp.TenantID, connectorID, m.RowHash, m.LegacyRowHash,
+		m.InvoiceID, m.PaymentID, m.PayoutID, m.Currency, m.HasIdentity(),
+	).Scan(&existingID, &existingAmount)
+	switch {
+	case err == sql.ErrNoRows:
+		id := uuid.Must(uuid.NewV7()).String()
+		tag, err := tx.ExecContext(ctx, `
 		INSERT INTO merchant_book_facts (
 			id, tenant_id, connector_id, invoice_id, order_id, payment_id, payout_id,
 			amount_minor, currency, due_at, batch_id, row_hash, import_id, fact_version,
 			tax_minor, cgst_minor, sgst_minor, igst_minor, tds_minor, hsn
 		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,1,$14,$15,$16,$17,$18,$19)
-		ON CONFLICT (tenant_id, connector_id, row_hash) DO UPDATE SET
-			invoice_id=EXCLUDED.invoice_id, order_id=EXCLUDED.order_id,
-			payment_id=EXCLUDED.payment_id, payout_id=EXCLUDED.payout_id,
-			amount_minor=EXCLUDED.amount_minor, currency=EXCLUDED.currency, due_at=EXCLUDED.due_at,
-			batch_id=EXCLUDED.batch_id, import_id=EXCLUDED.import_id,
-			tax_minor=EXCLUDED.tax_minor, cgst_minor=EXCLUDED.cgst_minor, sgst_minor=EXCLUDED.sgst_minor,
-			igst_minor=EXCLUDED.igst_minor, tds_minor=EXCLUDED.tds_minor, hsn=EXCLUDED.hsn,
-			fact_version=merchant_book_facts.fact_version + 1, updated_at=now()
-		WHERE merchant_book_facts.amount_minor IS DISTINCT FROM EXCLUDED.amount_minor
-			OR merchant_book_facts.currency IS DISTINCT FROM EXCLUDED.currency
-			OR merchant_book_facts.due_at IS DISTINCT FROM EXCLUDED.due_at
-			OR merchant_book_facts.tax_minor IS DISTINCT FROM EXCLUDED.tax_minor
-			OR merchant_book_facts.cgst_minor IS DISTINCT FROM EXCLUDED.cgst_minor
-			OR merchant_book_facts.sgst_minor IS DISTINCT FROM EXCLUDED.sgst_minor
-			OR merchant_book_facts.igst_minor IS DISTINCT FROM EXCLUDED.igst_minor
-			OR merchant_book_facts.tds_minor IS DISTINCT FROM EXCLUDED.tds_minor`,
-		id, imp.TenantID, merchantConnectorID(imp.ConnectorID), m.InvoiceID, m.OrderID, m.PaymentID, m.PayoutID,
-		m.AmountMinor, m.Currency, due, m.BatchID, m.RowHash, nullIfEmpty(imp.ID),
-		m.TaxMinor, m.CGSTMinor, m.SGSTMinor, m.IGSTMinor, m.TDSMinor, m.HSN,
+		ON CONFLICT (tenant_id, connector_id, row_hash) DO NOTHING`,
+			id, imp.TenantID, connectorID, m.InvoiceID, m.OrderID, m.PaymentID, m.PayoutID,
+			m.AmountMinor, m.Currency, due, m.BatchID, m.RowHash, nullIfEmpty(imp.ID),
+			m.TaxMinor, m.CGSTMinor, m.SGSTMinor, m.IGSTMinor, m.TDSMinor, m.HSN,
+		)
+		if err != nil {
+			return "", err
+		}
+		if n, _ := tag.RowsAffected(); n == 0 {
+			return "duplicate", nil
+		}
+		return "inserted", nil
+	case err != nil:
+		return "", err
+	}
+	// Same fact: never overwrite amount_minor. A different amount is kept in
+	// reupload_amount_minor (NULL again when the upload agrees).
+	var reupload any
+	if m.AmountMinor != existingAmount {
+		reupload = m.AmountMinor
+	}
+	tag, err := tx.ExecContext(ctx, `
+		UPDATE merchant_book_facts SET
+			order_id=$2, due_at=$3, batch_id=$4, import_id=$5,
+			tax_minor=$6, cgst_minor=$7, sgst_minor=$8, igst_minor=$9, tds_minor=$10, hsn=$11,
+			reupload_amount_minor=$12,
+			fact_version=fact_version + 1, updated_at=now()
+		WHERE id=$1 AND (
+			reupload_amount_minor IS DISTINCT FROM $12
+			OR due_at IS DISTINCT FROM $3
+			OR tax_minor IS DISTINCT FROM $6
+			OR cgst_minor IS DISTINCT FROM $7
+			OR sgst_minor IS DISTINCT FROM $8
+			OR igst_minor IS DISTINCT FROM $9
+			OR tds_minor IS DISTINCT FROM $10)`,
+		existingID, m.OrderID, due, m.BatchID, nullIfEmpty(imp.ID),
+		m.TaxMinor, m.CGSTMinor, m.SGSTMinor, m.IGSTMinor, m.TDSMinor, m.HSN, reupload,
 	)
 	if err != nil {
 		return "", err
 	}
-	n, _ := tag.RowsAffected()
-	if n == 0 {
+	if n, _ := tag.RowsAffected(); n == 0 {
 		return "duplicate", nil
 	}
-	return "inserted", nil
+	return "updated", nil
 }
+
+// merchantIdentityLookupSQL finds the stored fact for a merchant row by new
+// hash, legacy hash, or (when the row has ids) the same ids + currency.
+const merchantIdentityLookupSQL = `
+		SELECT id::text, amount_minor FROM merchant_book_facts
+		WHERE tenant_id=$1 AND connector_id=$2 AND (
+			row_hash = $3 OR row_hash = $4
+			OR ($9 AND invoice_id=$5 AND payment_id=$6 AND payout_id=$7 AND upper(currency)=upper($8)))
+		ORDER BY created_at ASC
+		LIMIT 1
+		FOR UPDATE`

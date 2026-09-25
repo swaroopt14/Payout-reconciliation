@@ -117,7 +117,7 @@ func SignupNewTenant(ctx context.Context, db *sql.DB, tenantName, name, email, p
 	_, err = tx.ExecContext(ctx,
 		`INSERT INTO auth_users (user_id, tenant_id, email, password_hash, role, status, name)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-		userID, tenantID, email, string(pwHash), roleCustomerAdmin, statusActive, name,
+		userID, tenantID, email, string(pwHash), signupRole(), statusActive, name,
 	)
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -126,7 +126,8 @@ func SignupNewTenant(ctx context.Context, db *sql.DB, tenantName, name, email, p
 		return nil, err
 	}
 
-	tokens, err := IssueTokens(tenantID, userID, email, roleCustomerAdmin, time.Time{})
+	// Signup never mints a controlled role (D39); see role_grant.go.
+	tokens, err := IssueTokens(tenantID, userID, email, signupRole(), time.Time{})
 	if err != nil {
 		return nil, err
 	}
@@ -146,7 +147,7 @@ func SignupNewTenant(ctx context.Context, db *sql.DB, tenantName, name, email, p
 			TenantID: tenantID,
 			Email:    email,
 			Name:     name,
-			Role:     roleCustomerAdmin,
+			Role:     signupRole(),
 			Status:   statusActive,
 		},
 		Tenant: AuthTenant{

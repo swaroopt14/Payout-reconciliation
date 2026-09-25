@@ -18,7 +18,7 @@ func NewS3Store(ctx context.Context, bucketname string, region string) (*S3Store
 	if err != nil {
 		return nil, err
 	}
-	client := s3.NewFromConfig(cfg)
+	client := s3.NewFromConfig(cfg, withPathStyleFromEnv)
 
 	return &S3Store{Client: client, BucketName: bucketname}, nil
 

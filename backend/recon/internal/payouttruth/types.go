@@ -44,6 +44,9 @@ type CanonicalPayout struct {
 	FirstObservedAt   time.Time
 	LastObservedAt    time.Time
 	Sources           []string
+	// AmountConflictMinor (B5): a later observation carried a different
+	// amount. AmountMinor keeps the first observed amount; nil = no conflict.
+	AmountConflictMinor *int64
 }
 
 func Reduce(current CanonicalPayout, incoming Observation) CanonicalPayout {
@@ -61,8 +64,15 @@ func Reduce(current CanonicalPayout, incoming Observation) CanonicalPayout {
 	out := current
 	out.LastObservedAt = now
 	out.Sources = appendUnique(out.Sources, incoming.Source)
+	// B5: never overwrite a known amount; surface a different one instead.
 	if incoming.AmountMinor > 0 {
-		out.AmountMinor = incoming.AmountMinor
+		switch {
+		case out.AmountMinor <= 0:
+			out.AmountMinor = incoming.AmountMinor
+		case incoming.AmountMinor != out.AmountMinor:
+			amt := incoming.AmountMinor
+			out.AmountConflictMinor = &amt
+		}
 	}
 	if incoming.Currency != "" {
 		out.Currency = incoming.Currency

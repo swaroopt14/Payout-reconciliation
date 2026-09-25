@@ -8,6 +8,8 @@ import {
   applyRefreshedSessionCookies,
   requireSessionTenantForProdProxy,
 } from '@/services/auth/resolvePayoutTenant.server'
+import { resolveIntelligenceSource } from '@/services/settlementSourceFlag'
+import { labelBuiltResponse } from '@/services/settlementSource.server'
 
 export const dynamic = 'force-dynamic'
 
@@ -50,7 +52,14 @@ function mergeDlqRows(primary: BackendDLQItem[], manualReview: BackendDLQItem[])
  * batch detail), scoped intents from intent-engine, and DLQ rows for the tenant.
  * Tenant is taken from the signed-in session only (query tenant_id is ignored).
  */
-export async function GET(request: NextRequest) {
+export async function GET(request: NextRequest): Promise<NextResponse> {
+  // Intelligence batches may come from the smoke simulator only when the demo flag is on;
+  // label the whole composed feed demo in that case.
+  const intel = resolveIntelligenceSource()
+  return labelBuiltResponse(await buildIntentJournal(request), intel)
+}
+
+async function buildIntentJournal(request: NextRequest): Promise<NextResponse> {
   const gate = await requireSessionTenantForProdProxy(request)
   if (!gate.ok) return gate.response
   const tenantId = gate.tenantId

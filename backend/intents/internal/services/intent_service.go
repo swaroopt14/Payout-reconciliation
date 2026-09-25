@@ -161,7 +161,7 @@ type CanonicalIntentRepository interface {
 
 	// R-05: minimal approval primitive for a held (REQUIRES_REVIEW) intent.
 	GetHeldIntentForApproval(ctx context.Context, tenantID, intentID string) (amount decimal.Decimal, currency string, governanceState string, err error)
-	ApproveHeldIntent(ctx context.Context, tenantID, intentID string) error
+	ApproveHeldIntent(ctx context.Context, tenantID, intentID, approvedBy string) error
 
 	UpdateSnapshotRefs(
 		ctx context.Context,
@@ -381,7 +381,10 @@ var ErrIntentNotHeld = errors.New("intent is not currently held for review")
 // and, only if it now fits, flip the intent to ACCEPTED. This is
 // deliberately not a review UI/audit-trail/permissions system — just the
 // atomic re-check the doc's acceptance tests require to exist at all.
-func (s *IntentService) ApproveHeldIntent(ctx context.Context, tenantID, intentID string) (string, error) {
+//
+// approvedBy is the verified PAYOUT_APPROVER user id (Slice 8, D39), stored
+// as payment_intents.approved_by alongside approved_at.
+func (s *IntentService) ApproveHeldIntent(ctx context.Context, tenantID, intentID, approvedBy string) (string, error) {
 	amount, currency, governanceState, err := s.repo.GetHeldIntentForApproval(ctx, tenantID, intentID)
 	if err != nil {
 		return "", fmt.Errorf("approve held intent: %w", err)
@@ -403,7 +406,7 @@ func (s *IntentService) ApproveHeldIntent(ctx context.Context, tenantID, intentI
 		return decision, nil
 	}
 
-	if err := s.repo.ApproveHeldIntent(ctx, tenantID, intentID); err != nil {
+	if err := s.repo.ApproveHeldIntent(ctx, tenantID, intentID, approvedBy); err != nil {
 		return "", fmt.Errorf("approve held intent: %w", err)
 	}
 	return decision, nil
@@ -416,7 +419,17 @@ func parseAmount(value string) (decimal.Decimal, error) {
 	if v == "" {
 		return decimal.Zero, errors.New("amount is required")
 	}
-	return decimal.NewFromString(v) // exact decimal, no rounding
+	d, err := decimal.NewFromString(v) // exact decimal, no rounding
+	if err != nil {
+		return decimal.Zero, err
+	}
+	// Every downstream amount_minor (idempotency key, row hash, registry,
+	// governance hash) is derived from this value; reject sub-paise and
+	// int64 overflow here so none of them can silently truncate.
+	if _, err := amountMinorExact(d); err != nil {
+		return decimal.Zero, err
+	}
+	return d, nil
 }
 
 // TOK-04: tenant_id is intentionally NOT part of this request body anymore
@@ -542,10 +555,10 @@ func (s *IntentService) isAbnormalAmount(amount decimal.Decimal, currency string
 	return amount.GreaterThan(threshold)
 }
 
-// computeBusinessIdempotencyKey uses the "preferred" business_idempotency_hash
-// formula (tenant_id + source_system + client_payout_ref + amount + currency)
-// when clientPayoutRef is a reliable reference, else falls back to
-// business_idempotency_fallback_hash (beneficiary_fingerprint + amount +
+// computeBusinessIdempotencyKey returns the key stored going forward (v2):
+// the preferred formula (tenant_id + source_system + client_payout_ref +
+// currency, NO amount — D18) when clientPayoutRef is a reliable reference,
+// else business_idempotency_fallback_hash (beneficiary_fingerprint + amount +
 // currency + execution_date + invoice_ref + purpose_code). invoiceRef has no
 // ingestion pipeline yet, so it hashes as "" — see canonical_row_hash for the
 // same treatment.
@@ -559,41 +572,9 @@ func (s *IntentService) computeBusinessIdempotencyKey(
 	intendedExecutionAt string,
 	purposeCode string,
 ) string {
-	amountMinor := amount.Mul(decimal.NewFromInt(100)).IntPart()
-
-	if canonicalizer.IsReliableClientPayoutRef(clientPayoutRef) {
-		hash, err := canonicalizer.ComputeBusinessIdempotencyHash(canonicalizer.BusinessIdempotencyHashInput{
-			TenantID:        tenantID,
-			SourceSystem:    sourceSystem,
-			ClientPayoutRef: clientPayoutRef,
-			AmountMinor:     amountMinor,
-			Currency:        currency,
-		})
-		if err == nil {
-			return hash
-		}
-		log.Printf("⚠️ Failed to compute business_idempotency_hash for tenant %s: %v", tenantID, err)
-	}
-
-	executionDate := ""
-	if t, err := time.Parse(time.RFC3339, strings.TrimSpace(intendedExecutionAt)); err == nil {
-		executionDate = t.UTC().Format("2006-01-02")
-	}
-
-	hash, err := canonicalizer.ComputeBusinessIdempotencyFallbackHash(canonicalizer.BusinessIdempotencyFallbackHashInput{
-		TenantID:               tenantID,
-		BeneficiaryFingerprint: fingerPrint,
-		AmountMinor:            amountMinor,
-		Currency:               currency,
-		ExecutionDate:          executionDate,
-		InvoiceRef:             "",
-		PurposeCode:            purposeCode,
-	})
-	if err != nil {
-		log.Printf("⚠️ Failed to compute business_idempotency_fallback_hash for tenant %s: %v", tenantID, err)
-		return ""
-	}
-	return hash
+	// Slice 8: returns the v2 (stored) key; see computeBusinessIdempotencyKeys.
+	return s.computeBusinessIdempotencyKeys(tenantID, sourceSystem, clientPayoutRef,
+		fingerPrint, amount, currency, intendedExecutionAt, purposeCode).V2
 }
 
 func (s *IntentService) computeRequestFingerprint(beneficiaryName string, amount decimal.Decimal, accountNumber string, vpa string, currency string) string {
@@ -2268,11 +2249,14 @@ func (s *IntentService) processIncomingIntentInternal(
 
 	bFingerprint := s.computeBeneficiaryFingerprint(tokenMap)
 	timeBucket := time.Now().UTC().Format("2006-01-02")
-	bIdemKey := s.computeBusinessIdempotencyKey(
+	// Slice 8 (D18): v2 key (no amount when a reference exists) is stored;
+	// the legacy v1 key is still checked during the transition.
+	bKeys := s.computeBusinessIdempotencyKeys(
 		in.TenantID.String(), in.SourceSystem, canonicalInput.ClientPayoutRef,
 		bFingerprint, amount, canonicalInput.Amount.Currency,
 		canonicalInput.IntendedExecutionAt, canonicalInput.PurposeCode,
 	)
+	bIdemKey := bKeys.V2
 
 	// UPDATED: Abnormal amount detection
 	var anomalies []string
@@ -2281,7 +2265,9 @@ func (s *IntentService) processIncomingIntentInternal(
 	}
 
 	// -------- STEP 8.7: Business Idempotency Registry Check (NEW) --------
-	registryDuplicate, err := s.repo.CheckIdempotencyRegistry(ctx, in.TenantID.String(), bIdemKey)
+	bizMatch, err := resolveBusinessIdempotency(ctx, s.repo, in.TenantID.String(), bKeys,
+		amount.Mul(decimal.NewFromInt(100)).IntPart(), canonicalInput.Amount.Currency)
+	registryDuplicate := bizMatch.Entry
 	if err != nil {
 		retIn = in
 		retProfile = resolvedProfile
@@ -2306,6 +2292,11 @@ func (s *IntentService) processIncomingIntentInternal(
 			dupReason = "SAME_BENEFICIARY_AMOUNT_TIME"
 		}
 		comparedIntentID = registryDuplicate.IntentID.String()
+		if bizMatch.AmountMismatch {
+			// Same reference, different amount: never merge silently.
+			dupReason = "CLIENT_PAYOUT_REF_REUSED"
+			anomalies = append(anomalies, AnomalyAmountChangedSameRef)
+		}
 	} else {
 		// Prepare registry entry for new intent
 		registryEntry = &models.BusinessIdempotencyEntry{
@@ -2471,15 +2462,16 @@ func (s *IntentService) processIncomingIntentInternal(
 		GovernanceHash:        governanceHash,
 
 		// Service 2 fields
-		BusinessIdempotencyKey:  bIdemKey,
-		BeneficiaryFingerprint:  bFingerprint,
-		ConfidenceScore:         nil, // REMOVED
-		ProofReadinessScore:     pScore,
-		MatchabilityScore:       mScore,
-		IntentQualityScore:      iScore,
-		MappingConfidenceScore:  mapScore,
-		SchemaCompletenessScore: schemaScore,
-		DuplicateReasonCode:     dupReason,
+		BusinessIdempotencyKey:   bIdemKey,
+		BusinessIdempotencyKeyV1: legacyBusinessKey(bKeys),
+		BeneficiaryFingerprint:   bFingerprint,
+		ConfidenceScore:          nil, // REMOVED
+		ProofReadinessScore:      pScore,
+		MatchabilityScore:        mScore,
+		IntentQualityScore:       iScore,
+		MappingConfidenceScore:   mapScore,
+		SchemaCompletenessScore:  schemaScore,
+		DuplicateReasonCode:      dupReason,
 
 		// NEW fields:
 		ReferenceQualityScore: refQualityScore,
@@ -3298,11 +3290,12 @@ func (s *IntentService) ProcessTokenizeResult(
 
 	bFingerprint := s.computeBeneficiaryFingerprint(tokenMap)
 	timeBucket := time.Now().UTC().Format("2006-01-02")
-	bIdemKey := s.computeBusinessIdempotencyKey(
+	bKeys := s.computeBusinessIdempotencyKeys(
 		event.TenantID, event.SourceSystem, canonicalInput.ClientPayoutRef,
 		bFingerprint, amount, canonicalInput.Amount.Currency,
 		canonicalInput.IntendedExecutionAt, canonicalInput.PurposeCode,
 	)
+	bIdemKey := bKeys.V2
 
 	// UPDATED: Abnormal amount detection
 	var anomalies []string
@@ -3311,10 +3304,12 @@ func (s *IntentService) ProcessTokenizeResult(
 	}
 
 	// -------- Business Idempotency Registry Check (NEW) --------
-	registryDuplicate, err := s.repo.CheckIdempotencyRegistry(ctx, event.TenantID, bIdemKey)
+	bizMatch, err := resolveBusinessIdempotency(ctx, s.repo, event.TenantID, bKeys,
+		amount.Mul(decimal.NewFromInt(100)).IntPart(), canonicalInput.Amount.Currency)
 	if err != nil {
 		return nil, err
 	}
+	registryDuplicate := bizMatch.Entry
 
 	dupRisk := false
 	dupReason := "NONE"
@@ -3328,6 +3323,11 @@ func (s *IntentService) ProcessTokenizeResult(
 			dupReason = "SAME_BENEFICIARY_AMOUNT_TIME"
 		}
 		comparedIntentID = registryDuplicate.IntentID.String()
+		if bizMatch.AmountMismatch {
+			// Same reference, different amount: never merge silently.
+			dupReason = "CLIENT_PAYOUT_REF_REUSED"
+			anomalies = append(anomalies, AnomalyAmountChangedSameRef)
+		}
 	} else {
 		// Prepare registry entry
 		registryEntry = &models.BusinessIdempotencyEntry{
@@ -3492,15 +3492,16 @@ func (s *IntentService) ProcessTokenizeResult(
 		SourceSystem:          event.SourceSystem,
 		GovernanceHash:        event.Canonical.GovernanceHash,
 		// Service 2 fields
-		BusinessIdempotencyKey:  bIdemKey,
-		BeneficiaryFingerprint:  bFingerprint,
-		ConfidenceScore:         nil, // REMOVED
-		ProofReadinessScore:     pScore,
-		MatchabilityScore:       mScore,
-		IntentQualityScore:      iScore,
-		MappingConfidenceScore:  mapScore,
-		SchemaCompletenessScore: schemaScore,
-		DuplicateReasonCode:     dupReason,
+		BusinessIdempotencyKey:   bIdemKey,
+		BusinessIdempotencyKeyV1: legacyBusinessKey(bKeys),
+		BeneficiaryFingerprint:   bFingerprint,
+		ConfidenceScore:          nil, // REMOVED
+		ProofReadinessScore:      pScore,
+		MatchabilityScore:        mScore,
+		IntentQualityScore:       iScore,
+		MappingConfidenceScore:   mapScore,
+		SchemaCompletenessScore:  schemaScore,
+		DuplicateReasonCode:      dupReason,
 
 		// NEW fields:
 		ReferenceQualityScore: refQualityScore,

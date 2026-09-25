@@ -104,6 +104,11 @@ func (m *MemoryStore) Commit(_ context.Context, imp Import, rows []RowResult, ev
 			m.Banks = append(m.Banks, b)
 		}
 		if rows[i].Merchant != nil {
+			if m.mergeMerchant(*rows[i].Merchant) {
+				rows[i].Status = RowDuplicate
+				imp.DuplicateRows++
+				continue
+			}
 			m.MerchantBooks = append(m.MerchantBooks, *rows[i].Merchant)
 		}
 		rows[i].Status = RowInserted
@@ -135,4 +140,25 @@ func bankSide(credit, debit int64) string {
 		return "DEBIT"
 	}
 	return ""
+}
+
+// mergeMerchant applies B5 identity semantics: an already-stored fact with the
+// same identity (new or legacy hash, or same ids) is never duplicated and its
+// original amount_minor is never overwritten; a different amount is recorded
+// in ReuploadAmountMinor for recon to surface. Returns true when merged.
+func (m *MemoryStore) mergeMerchant(row MerchantBookRow) bool {
+	for j := range m.MerchantBooks {
+		cur := &m.MerchantBooks[j]
+		if !cur.SameIdentity(row) && !row.SameIdentity(*cur) {
+			continue
+		}
+		if row.AmountMinor != cur.AmountMinor {
+			amt := row.AmountMinor
+			cur.ReuploadAmountMinor = &amt
+		} else {
+			cur.ReuploadAmountMinor = nil
+		}
+		return true
+	}
+	return false
 }

@@ -51,16 +51,17 @@ func (s *SQLStore) GetCanonicalPayout(ctx context.Context, tenantID, connectorID
 	var pay payouttruth.CanonicalPayout
 	var created sql.NullTime
 	var sources pq.StringArray
+	var conflict sql.NullInt64
 	err := s.runner(ctx).QueryRowContext(ctx, `
 		SELECT id::text, tenant_id::text, connector_id::text, provider, payout_id, amount_minor, currency,
 			provider_status, COALESCE(utr,''), COALESCE(mode,''), COALESCE(purpose,''), COALESCE(status_reason,''),
-			provider_created_at, first_observed_at, last_observed_at, COALESCE(sources, '{}')
+			provider_created_at, first_observed_at, last_observed_at, COALESCE(sources, '{}'), amount_conflict_minor
 		FROM canonical_payouts
 		WHERE tenant_id=$1 AND connector_id=$2 AND payout_id=$3
 		FOR UPDATE`, tenantID, connectorID, payoutID,
 	).Scan(&pay.ID, &pay.TenantID, &pay.ConnectorID, &pay.Provider, &pay.PayoutID, &pay.AmountMinor, &pay.Currency,
 		&pay.ProviderStatus, &pay.UTR, &pay.Mode, &pay.Purpose, &pay.StatusReason,
-		&created, &pay.FirstObservedAt, &pay.LastObservedAt, &sources)
+		&created, &pay.FirstObservedAt, &pay.LastObservedAt, &sources, &conflict)
 	if errors.Is(err, sql.ErrNoRows) {
 		return payouttruth.CanonicalPayout{}, false, nil
 	}
@@ -71,6 +72,10 @@ func (s *SQLStore) GetCanonicalPayout(ctx context.Context, tenantID, connectorID
 		pay.ProviderCreatedAt = created.Time
 	}
 	pay.Sources = []string(sources)
+	if conflict.Valid {
+		v := conflict.Int64
+		pay.AmountConflictMinor = &v
+	}
 	return pay, true, nil
 }
 
@@ -91,16 +96,24 @@ func (s *SQLStore) UpsertCanonicalPayout(ctx context.Context, pay payouttruth.Ca
 	_, err := s.runner(ctx).ExecContext(ctx, `
 		INSERT INTO canonical_payouts (
 			id, tenant_id, connector_id, provider, payout_id, amount_minor, currency, provider_status,
-			utr, mode, purpose, status_reason, provider_created_at, first_observed_at, last_observed_at, sources, created_at, updated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$17)
+			utr, mode, purpose, status_reason, provider_created_at, first_observed_at, last_observed_at, sources, created_at, updated_at,
+			amount_conflict_minor
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$17,$18)
 		ON CONFLICT (tenant_id, connector_id, provider, payout_id) DO UPDATE SET
-			amount_minor=EXCLUDED.amount_minor, currency=EXCLUDED.currency,
+			-- B5: first observed amount is kept; a different one lands in amount_conflict_minor.
+			amount_minor=CASE WHEN canonical_payouts.amount_minor > 0 THEN canonical_payouts.amount_minor ELSE EXCLUDED.amount_minor END,
+			amount_conflict_minor=CASE
+				WHEN canonical_payouts.amount_minor > 0 AND EXCLUDED.amount_minor > 0 AND EXCLUDED.amount_minor <> canonical_payouts.amount_minor
+					THEN EXCLUDED.amount_minor
+				ELSE COALESCE(EXCLUDED.amount_conflict_minor, canonical_payouts.amount_conflict_minor) END,
+			currency=EXCLUDED.currency,
 			provider_status=EXCLUDED.provider_status, utr=EXCLUDED.utr, mode=EXCLUDED.mode,
 			purpose=EXCLUDED.purpose, status_reason=EXCLUDED.status_reason,
 			last_observed_at=EXCLUDED.last_observed_at, sources=EXCLUDED.sources, updated_at=now()`,
 		pay.ID, pay.TenantID, pay.ConnectorID, pay.Provider, pay.PayoutID, pay.AmountMinor, pay.Currency, pay.ProviderStatus,
 		pay.UTR, pay.Mode, pay.Purpose, pay.StatusReason, nullTime(pay.ProviderCreatedAt),
 		pay.FirstObservedAt, pay.LastObservedAt, pq.StringArray(pay.Sources), now,
+		nullInt64Ptr(pay.AmountConflictMinor),
 	)
 	return err
 }
@@ -134,7 +147,8 @@ func (s *SQLStore) ListPayoutObservationEvents(ctx context.Context, tenantID, co
 func (s *ReconSQLStore) ListCanonicalPayouts(ctx context.Context, tenantID, connectorID string) ([]recon.PayoutFact, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id::text, payout_id, provider_status, amount_minor, currency, COALESCE(utr,''), COALESCE(mode,''),
-			COALESCE(purpose,''), COALESCE(status_reason,''), provider_created_at, first_observed_at, COALESCE(batch_id,'')
+			COALESCE(purpose,''), COALESCE(status_reason,''), provider_created_at, first_observed_at, COALESCE(batch_id,''),
+			amount_conflict_minor
 		FROM canonical_payouts WHERE tenant_id=$1 AND connector_id=$2 ORDER BY last_observed_at ASC`,
 		tenantID, connectorID)
 	if err != nil {
@@ -155,7 +169,8 @@ func (s *ReconSQLStore) ListCanonicalPayouts(ctx context.Context, tenantID, conn
 func (s *ReconSQLStore) GetCanonicalPayoutFact(ctx context.Context, tenantID, connectorID, payoutID string) (recon.PayoutFact, bool, error) {
 	row := s.db.QueryRowContext(ctx, `
 		SELECT id::text, payout_id, provider_status, amount_minor, currency, COALESCE(utr,''), COALESCE(mode,''),
-			COALESCE(purpose,''), COALESCE(status_reason,''), provider_created_at, first_observed_at, COALESCE(batch_id,'')
+			COALESCE(purpose,''), COALESCE(status_reason,''), provider_created_at, first_observed_at, COALESCE(batch_id,''),
+			amount_conflict_minor
 		FROM canonical_payouts WHERE tenant_id=$1 AND connector_id=$2 AND payout_id=$3`,
 		tenantID, connectorID, payoutID)
 	p, err := scanPayoutFact(row)
@@ -194,13 +209,25 @@ func (s *ReconSQLStore) ListPayoutObservationFacts(ctx context.Context, tenantID
 func scanPayoutFact(row scanner) (recon.PayoutFact, error) {
 	var p recon.PayoutFact
 	var created sql.NullTime
+	var conflict sql.NullInt64
 	err := row.Scan(&p.ID, &p.PayoutID, &p.ProviderStatus, &p.AmountMinor, &p.Currency,
-		&p.UTR, &p.Mode, &p.Purpose, &p.StatusReason, &created, &p.FirstObservedAt, &p.BatchID)
+		&p.UTR, &p.Mode, &p.Purpose, &p.StatusReason, &created, &p.FirstObservedAt, &p.BatchID, &conflict)
 	if err != nil {
 		return recon.PayoutFact{}, err
+	}
+	if conflict.Valid {
+		v := conflict.Int64
+		p.AmountConflictMinor = &v
 	}
 	if created.Valid {
 		p.ProviderCreatedAt = created.Time
 	}
 	return p, nil
+}
+
+func nullInt64Ptr(v *int64) any {
+	if v == nil {
+		return nil
+	}
+	return *v
 }

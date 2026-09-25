@@ -202,8 +202,8 @@ func main() {
 	// zord-console's server (/api/prod/intents/*) — both must run behind a
 	// verified principal so a caller-supplied tenant_id can never diverge
 	// from the tenant the caller is actually authenticated as.
-	// /internal/* routes are deliberately NOT wrapped here — R-02 covers
-	// those with a separate internal-service-token check, not end-user JWTs.
+	// /internal/* routes are deliberately NOT wrapped with Protect — R-02
+	// covers them with RequireInternalScope (service tokens, not end-user JWTs).
 	mux.HandleFunc("/v1/dlq", auth.Protect(dlqHandler.List))
 	mux.HandleFunc("/v1/dlq/manual-review", auth.Protect(dlqHandler.GetManualReviewDLQ))
 	mux.HandleFunc("/v1/dlq/terminal/count", auth.Protect(dlqHandler.GetTerminalDLQCount))
@@ -222,37 +222,39 @@ func main() {
 		}
 	}))
 	mux.HandleFunc("/v1/intents", auth.Protect(intentHandler.List))
-	// R-02: cross-tenant internal reads require a signed internal service
-	// token + explicit scope, not just gateway-route obscurity.
-	mux.HandleFunc("/internal/dlq/count", auth.RequireInternalScope(auth.ScopeIntentReadCrossTenant, dlqHandler.CountAll))
-	mux.HandleFunc("/internal/outbox/lease", outboxHandler.Lease)
-	mux.HandleFunc("/internal/outbox/ack", outboxHandler.Ack)
-	mux.HandleFunc("/internal/outbox/nack", outboxHandler.Nack)
-	mux.HandleFunc("/internal/dlq/lease", dlqOutboxHandler.Lease)
-	mux.HandleFunc("/internal/dlq/ack", dlqOutboxHandler.Ack)
-	mux.HandleFunc("/internal/dlq/nack", dlqOutboxHandler.Nack)
-	mux.HandleFunc("/internal/relay/canonical_batches/lease", batchOutboxHandler.Lease)
-	mux.HandleFunc("/internal/relay/canonical_batches/ack", batchOutboxHandler.Ack)
-	mux.HandleFunc("/internal/relay/canonical_batches/nack", batchOutboxHandler.Nack)
 	mux.HandleFunc("/api/prod/intents/batch-ids", auth.Protect(intentHandler.ListBatchIDs))
 	mux.HandleFunc("/api/prod/intents/payment-intents", auth.Protect(intentHandler.ListPaymentIntentLiteByBatch))
 	mux.HandleFunc("/api/prod/intents/dlq-items", auth.Protect(intentHandler.ListDLQItemsByBatchSimple))
-	mux.HandleFunc("/internal/airflow/transform", airflowHandler.Transform)
-	mux.HandleFunc("/internal/normalization/quality", normHandler.Quality)
 
-	// ── Admin: Mapping Profile CRUD ───────────────────────────────────────────
+	// R-02 + Slice 8: every /internal/* route requires an internal service
+	// credential carrying the route's scope (see http_routes.go).
+	registerInternalRoutes(mux, internalRouteHandlers{
+		DLQCount:             dlqHandler.CountAll,
+		OutboxLease:          outboxHandler.Lease,
+		OutboxAck:            outboxHandler.Ack,
+		OutboxNack:           outboxHandler.Nack,
+		DLQLease:             dlqOutboxHandler.Lease,
+		DLQAck:               dlqOutboxHandler.Ack,
+		DLQNack:              dlqOutboxHandler.Nack,
+		BatchLease:           batchOutboxHandler.Lease,
+		BatchAck:             batchOutboxHandler.Ack,
+		BatchNack:            batchOutboxHandler.Nack,
+		AirflowTransform:     airflowHandler.Transform,
+		NormalizationQuality: normHandler.Quality,
+	})
+
+	// Slice 8: admin routes run behind auth.Protect; approval needs a
+	// PAYOUT_APPROVER user (see http_routes.go).
 	profileHandler := handlers.NewMappingProfileHandler(db.DB)
-	mux.HandleFunc("/v1/admin/mapping-profiles", profileHandler.ListOrCreate)
-	mux.HandleFunc("/v1/admin/mapping-profiles/", profileHandler.GetUpdateOrDeactivate)
-
-	// ── Admin: Tenant Synonym CRUD ────────────────────────────────────────────
 	tenantSynonymHandler := handlers.NewTenantSynonymHandler(db.DB)
-	mux.HandleFunc("/v1/admin/tenant-synonyms", tenantSynonymHandler.ListOrCreate)
-	mux.HandleFunc("/v1/admin/tenant-synonyms/", tenantSynonymHandler.Deactivate)
-
-	// ── Admin: R-05 held-intent approval ──────────────────────────────────────
 	intentApprovalHandler := handlers.NewIntentApprovalHandler(intentService)
-	mux.HandleFunc("/v1/admin/intents/", auth.Protect(intentApprovalHandler.Approve))
+	registerAdminRoutes(mux, adminRouteHandlers{
+		MappingProfilesListOrCreate: profileHandler.ListOrCreate,
+		MappingProfileItem:          profileHandler.GetUpdateOrDeactivate,
+		TenantSynonymsListOrCreate:  tenantSynonymHandler.ListOrCreate,
+		TenantSynonymDeactivate:     tenantSynonymHandler.Deactivate,
+		IntentApprove:               intentApprovalHandler.Approve,
+	})
 
 	handler := func(msg []byte) error {
 		var event models.Event

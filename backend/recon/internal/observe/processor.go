@@ -2,6 +2,7 @@ package observe
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -56,12 +57,27 @@ type TransferEdgeSink interface {
 }
 
 type Processor struct {
-	store     poll.Store
-	truth     *paymenttruth.Processor
-	payouts   *payouttruth.Processor
-	Refunds   RefundSink
+	store   poll.Store
+	truth   *paymenttruth.Processor
+	payouts *payouttruth.Processor
+	Refunds RefundSink
+	// Transfers is a tenant-agnostic lookup kept as a test seam only.
+	// Production wires TransfersFor (D52: each tenant's own key).
 	Transfers TransferLookup
-	Edges     TransferEdgeSink
+	// TransfersFor returns the lookup for one tenant connector, built from
+	// that tenant's own credentials (D52). poll.ErrNoTenantSecret means the
+	// tenant has none; any other error means the source is unavailable.
+	// Either way enrichment is skipped, the refund still lands, and the row
+	// is marked skipped_* so it is not mistaken for "no marketplace".
+	TransfersFor func(ctx context.Context, tenantID, connectorID, mode string) (TransferLookup, error)
+	// CredentialInvalidator drops a tenant's cached key pair on Razorpay 401.
+	CredentialInvalidator poll.CredentialInvalidator
+	Edges                 TransferEdgeSink
+}
+
+// SkippedRefundLister lists refunds whose enrichment was skipped (D52).
+type SkippedRefundLister interface {
+	ListSkippedEnrichmentRefunds(ctx context.Context, tenantID, connectorID string, limit int) ([]recon.RefundFact, error)
 }
 
 func NewProcessor(store poll.Store) *Processor {
@@ -138,10 +154,13 @@ func (p *Processor) applyRefundOrPayout(ctx context.Context, env Envelope) (Resu
 		if strings.TrimSpace(env.TenantID) == "" || strings.TrimSpace(env.ConnectorID) == "" {
 			return Result{}, fmt.Errorf("missing tenant_id or connector_id")
 		}
-		if err := p.enrichRefundAndUpsertEdges(ctx, env.TenantID, env.ConnectorID, &item); err != nil {
+		status, err := p.enrichRefundAndUpsertEdges(ctx, env.TenantID, env.ConnectorID, env.ProviderMode, &item)
+		if err != nil {
 			return Result{}, err
 		}
-		saved, err := p.Refunds.UpsertRefund(ctx, env.TenantID, env.ConnectorID, MapRefundFact(item))
+		fact := MapRefundFact(item)
+		fact.EnrichmentStatus = status
+		saved, err := p.Refunds.UpsertRefund(ctx, env.TenantID, env.ConnectorID, fact)
 		if err != nil {
 			return Result{}, err
 		}
@@ -154,36 +173,128 @@ func (p *Processor) applyRefundOrPayout(ctx context.Context, env Envelope) (Resu
 // and/or Edges sink is wired. Seller enrichment never invents; edges are
 // reference-only (amount_minor correlation). Reverse ids are filled when the
 // TransferLookup also implements TransferReversalLookup.
-func (p *Processor) enrichRefundAndUpsertEdges(ctx context.Context, tenantID, connectorID string, item *reconRefund) error {
+//
+// It returns the refund's enrichment_status (D52):
+//   - "" when enrichment was not needed or no lookup is wired at all
+//   - enriched / no_transfers after a successful lookup
+//   - skipped_no_creds / skipped_unavailable when the tenant's lookup could
+//     not be built; the refund still lands (degrade, don't block).
+//
+// A Razorpay API error keeps the old behaviour (returned, so the message is
+// retried); a 401 also drops the tenant's cached credentials.
+func (p *Processor) enrichRefundAndUpsertEdges(ctx context.Context, tenantID, connectorID, mode string, item *reconRefund) (string, error) {
 	if item == nil {
-		return nil
+		return "", nil
 	}
 	paymentID := strings.TrimSpace(item.PaymentID)
 	needSeller := strings.TrimSpace(item.SellerID) == ""
 	needEdges := p.Edges != nil
-	if paymentID == "" || p.Transfers == nil || (!needSeller && !needEdges) {
-		return nil
+	if paymentID == "" || (!needSeller && !needEdges) {
+		return "", nil
 	}
-	transfers, err := p.Transfers.ListTransfersForPayment(ctx, paymentID)
+	if mode != "live" {
+		mode = "test"
+	}
+	lookup := p.Transfers
+	if p.TransfersFor != nil {
+		l, err := p.TransfersFor(ctx, tenantID, connectorID, mode)
+		if err != nil || l == nil {
+			status := recon.EnrichmentSkippedUnavailable
+			if errors.Is(err, poll.ErrNoTenantSecret) {
+				status = recon.EnrichmentSkippedNoCreds
+			}
+			poll.ObserveEnrichmentSkipped(status)
+			// ids + reason code only; never a key or an upstream message.
+			log.Printf("WARN observe: transfer enrichment skipped tenant_id=%s connector_id=%s mode=%s refund_id=%s reason=%s",
+				tenantID, connectorID, mode, item.RefundID, status)
+			return status, nil
+		}
+		lookup = l
+	}
+	if lookup == nil {
+		return "", nil
+	}
+	transfers, err := lookup.ListTransfersForPayment(ctx, paymentID)
 	if err != nil {
-		return err
+		p.invalidateOnUnauthorized(err, tenantID, connectorID, mode)
+		return "", err
 	}
 	if needSeller {
 		EnrichRefundWithTransfers(item, transfers)
 	}
 	if needEdges {
-		return p.upsertEdgesFromTransfers(ctx, tenantID, connectorID, item.PaymentID, item.RefundID, item.SellerID, transfers)
+		if err := p.upsertEdgesFromTransfersWith(ctx, lookup, tenantID, connectorID, item.PaymentID, item.RefundID, item.SellerID, transfers); err != nil {
+			p.invalidateOnUnauthorized(err, tenantID, connectorID, mode)
+			return "", err
+		}
 	}
-	return nil
+	if len(transfers) == 0 {
+		return recon.EnrichmentNoTransfers, nil
+	}
+	return recon.EnrichmentEnriched, nil
+}
+
+// CredentialInvalidator (optional) is told when Razorpay returns 401 for a
+// tenant, so its cached key pair is dropped (D52).
+func (p *Processor) invalidateOnUnauthorized(err error, tenantID, connectorID, mode string) {
+	var pErr *razorpay.ProviderError
+	if p.CredentialInvalidator != nil && errors.As(err, &pErr) && pErr.Kind == razorpay.ErrUnauthorized {
+		p.CredentialInvalidator.Invalidate(tenantID, connectorID, mode)
+	}
+}
+
+// ReEnrichSkipped re-runs transfer enrichment for up to limit refunds in one
+// tenant+connector whose enrichment was skipped (D52). Called by the D26
+// pull once that tenant's credentials work. Rows that are still skipped keep
+// their status; enriched rows get seller_id (when single-seller), edges and
+// status enriched / no_transfers. Returns how many rows left skipped_*.
+func (p *Processor) ReEnrichSkipped(ctx context.Context, tenantID, connectorID, mode string, limit int) (int, error) {
+	if p == nil || p.Refunds == nil {
+		return 0, nil
+	}
+	lister, ok := p.Refunds.(SkippedRefundLister)
+	if !ok {
+		return 0, nil
+	}
+	skipped, err := lister.ListSkippedEnrichmentRefunds(ctx, tenantID, connectorID, limit)
+	if err != nil {
+		return 0, err
+	}
+	done := 0
+	for _, f := range skipped {
+		item := reconRefund{
+			RefundID: f.RefundID, PaymentID: f.PaymentID, AmountMinor: f.AmountMinor,
+			Currency: f.Currency, ProviderStatus: f.ProviderStatus, Source: f.Source, SellerID: f.SellerID,
+		}
+		status, err := p.enrichRefundAndUpsertEdges(ctx, tenantID, connectorID, mode, &item)
+		if err != nil {
+			return done, err
+		}
+		if status == "" || strings.HasPrefix(status, "skipped_") {
+			continue
+		}
+		fact := MapRefundFact(item)
+		fact.ID = f.ID
+		fact.EnrichmentStatus = status
+		if _, err := p.Refunds.UpsertRefund(ctx, tenantID, connectorID, fact); err != nil {
+			return done, err
+		}
+		done++
+	}
+	return done, nil
 }
 
 func (p *Processor) upsertEdgesFromTransfers(ctx context.Context, tenantID, connectorID, paymentID, refundID, refundSellerID string, transfers []razorpay.TransferResponse) error {
+	return p.upsertEdgesFromTransfersWith(ctx, p.Transfers, tenantID, connectorID, paymentID, refundID, refundSellerID, transfers)
+}
+
+func (p *Processor) upsertEdgesFromTransfersWith(ctx context.Context, lookup TransferLookup, tenantID, connectorID, paymentID, refundID, refundSellerID string, transfers []razorpay.TransferResponse) error {
 	if p == nil || p.Edges == nil {
 		return nil
 	}
 	edges := MarketplaceEdgesFromTransfers(paymentID, refundID, refundSellerID, transfers)
 	var revLookup TransferReversalLookup
-	if r, ok := p.Transfers.(TransferReversalLookup); ok {
+	if r, ok := lookup.(TransferReversalLookup); ok {
 		revLookup = r
 	}
 	for _, e := range edges {

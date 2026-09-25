@@ -81,6 +81,20 @@ type CashSchedule struct {
 	UnknownTimingMinor   int64         `json:"unknown_timing_minor"`
 	AlreadyReceivedMinor int64         `json:"already_received_minor"`
 	Limitations          []string      `json:"limitations"`
+	// Dropped lists expected items not projected because a bank line already
+	// landed, with the basis ("reference" or "amount_only"). Additive; this
+	// is the cash schedule, never a recon verdict.
+	Dropped []ScheduleDrop `json:"dropped,omitempty"`
+}
+
+// ScheduleDrop is one expected item suppressed from the cash schedule.
+type ScheduleDrop struct {
+	Kind              string   `json:"kind"` // "invoice_credit" | "refund_debit"
+	AmountMinor       int64    `json:"amount_minor"`
+	Currency          string   `json:"currency"`
+	Refs              []string `json:"refs,omitempty"`
+	BankObservationID string   `json:"bank_observation_id,omitempty"`
+	DropBasis         string   `json:"drop_basis"` // "reference" | "amount_only"
 }
 
 // CashScheduleOpts extends BuildCashSchedule with merchant DueAt credits,
@@ -136,7 +150,7 @@ func BuildCashScheduleOpts(opts CashScheduleOpts) CashSchedule {
 	}
 	if len(opts.BankLines) > 0 {
 		out.Limitations = append(out.Limitations,
-			"Refund debits and invoice DueAt credits already landed at bank (reference, else amount+currency in window) are not projected.")
+			"Refund debits and invoice DueAt credits already landed at bank (reference, else a single amount+currency candidate in window; see dropped[].drop_basis) are not projected.")
 	}
 	windowEnd := asOf.AddDate(0, 0, days)
 	byDate := map[string]*ScheduleDay{}
@@ -249,7 +263,11 @@ func BuildCashScheduleOpts(opts CashScheduleOpts) CashSchedule {
 	}
 	dueLanded := newScheduleBankPool(opts.BankLines, opts.Results, false).claimAll(dueClaims)
 	for di, d := range dues {
-		if dueLanded[di] {
+		if dueLanded[di].landed() {
+			out.Dropped = append(out.Dropped, ScheduleDrop{
+				Kind: "invoice_credit", AmountMinor: d.claim.amount, Currency: nzCur(d.claim.currency),
+				Refs: nonEmpty(d.claim.refs), BankObservationID: dueLanded[di].BankID, DropBasis: dueLanded[di].Basis,
+			})
 			continue
 		}
 		ev := d.ev
@@ -269,7 +287,9 @@ func BuildCashScheduleOpts(opts CashScheduleOpts) CashSchedule {
 	}
 	for _, po := range opts.Payouts {
 		st := razorpay.NormalizePayoutStatus(po.ProviderStatus)
-		if razorpay.IsPayoutFailedLike(st) {
+		// Failed-like and reversed payouts move no net cash (D15, L5);
+		// pending/processing stay expected until a bank debit lands (D16).
+		if razorpay.IsPayoutNoNetOutflow(st) {
 			continue
 		}
 		if provenOut[po.PayoutID] {
@@ -356,7 +376,11 @@ func BuildCashScheduleOpts(opts CashScheduleOpts) CashSchedule {
 	}
 	refundLanded := newScheduleBankPool(opts.BankLines, opts.Results, true).claimAll(refundClaims)
 	for ri, r := range refunds {
-		if refundLanded[ri] {
+		if refundLanded[ri].landed() {
+			out.Dropped = append(out.Dropped, ScheduleDrop{
+				Kind: "refund_debit", AmountMinor: r.amt, Currency: nzCur(r.claim.currency),
+				Refs: nonEmpty(r.claim.refs), BankObservationID: refundLanded[ri].BankID, DropBasis: refundLanded[ri].Basis,
+			})
 			continue
 		}
 		if r.when.IsZero() {
@@ -369,6 +393,16 @@ func BuildCashScheduleOpts(opts CashScheduleOpts) CashSchedule {
 	for i := range out.Days {
 		if s, ok := byDate[out.Days[i].Date]; ok {
 			out.Days[i] = *s
+		}
+	}
+	return out
+}
+
+func nonEmpty(in []string) []string {
+	var out []string
+	for _, s := range in {
+		if strings.TrimSpace(s) != "" {
+			out = append(out, s)
 		}
 	}
 	return out

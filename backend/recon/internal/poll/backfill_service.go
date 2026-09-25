@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"strings"
 	"time"
@@ -37,6 +38,10 @@ type BackfillService struct {
 	now       func() time.Time
 	owner     string
 	truth     *paymenttruth.Processor
+
+	// ReEnrichSkipped (optional) re-runs transfer enrichment for refunds whose
+	// enrichment was skipped (D52). Wired to observe.Processor.ReEnrichSkipped.
+	ReEnrichSkipped func(ctx context.Context, tenantID, connectorID, mode string, limit int) (int, error)
 }
 
 func NewBackfillService(store Store, freshness *FreshnessService, creds CredentialResolver, factory ProviderFactory) *BackfillService {
@@ -216,11 +221,20 @@ func (s *BackfillService) run(ctx context.Context, jobID, expectedResource strin
 
 	cfg, err := s.creds.Resolve(ctx, job.TenantID, job.ConnectorID, job.ProviderMode)
 	if err != nil {
-		return s.failJob(ctx, job, cursor, "CREDENTIALS", err)
+		// D52 + EM: never a silent success. The job ends FAILED with a
+		// visible reason (NO_CREDENTIALS / CREDENTIALS_UNAVAILABLE), a
+		// per-tenant WARN (ids only) and backfill_credentials_missing_total.
+		code := CredentialFailureCode(err)
+		backfillCredentialsMissingTotal.Inc(code)
+		log.Printf("WARN backfill: no usable credentials tenant_id=%s connector_id=%s mode=%s resource=%s job_id=%s reason=%s",
+			job.TenantID, job.ConnectorID, job.ProviderMode, job.ResourceType, job.ID, code)
+		return s.failJob(ctx, job, cursor, code, err)
 	}
+	// Tenant key material is redacted from every job error string below.
+	tenantSecrets := []string{cfg.KeySecret, cfg.KeyID}
 	provider, err := s.factory(cfg)
 	if err != nil {
-		return s.failJob(ctx, job, cursor, "PROVIDER", err)
+		return s.failJob(ctx, job, cursor, "PROVIDER", errors.New(redactSecrets(err.Error(), tenantSecrets...)))
 	}
 
 	observeBackfillRun()
@@ -228,6 +242,8 @@ func (s *BackfillService) run(ctx context.Context, jobID, expectedResource strin
 	var runErr error
 	if job.ResourceType == ResourceSettlements {
 		runErr = s.paginateSettlements(ctx, &job, &cursor, provider)
+	} else if job.ResourceType == ResourcePayouts {
+		runErr = s.paginatePayouts(ctx, &job, &cursor, provider)
 	} else {
 		runErr = s.paginatePayments(ctx, &job, &cursor, provider)
 	}
@@ -241,7 +257,13 @@ func (s *BackfillService) run(ctx context.Context, jobID, expectedResource strin
 		var pErr *razorpay.ProviderError
 		if errors.As(runErr, &pErr) {
 			job.LastErrorCode = pErr.Code
-			job.LastErrorMessage = redactError(pErr)
+			job.LastErrorMessage = redactSecrets(redactError(pErr), tenantSecrets...)
+			if pErr.Kind == razorpay.ErrUnauthorized {
+				// D52: a rotated key -> drop the cached pair so the next run refetches.
+				if inv, ok := s.creds.(CredentialInvalidator); ok {
+					inv.Invalidate(job.TenantID, job.ConnectorID, job.ProviderMode)
+				}
+			}
 			if pErr.Kind == razorpay.ErrUnauthorized || pErr.Kind == razorpay.ErrForbidden || pErr.Kind == razorpay.ErrDecode {
 				job.Status = JobFailed
 			} else {
@@ -251,7 +273,7 @@ func (s *BackfillService) run(ctx context.Context, jobID, expectedResource strin
 		} else {
 			job.Status = JobPartial
 			job.LastErrorCode = "BACKFILL_ERROR"
-			job.LastErrorMessage = redactError(runErr)
+			job.LastErrorMessage = redactSecrets(redactError(runErr), tenantSecrets...)
 			job.ErrorCount++
 		}
 	} else if cursor.Status == CursorComplete {
@@ -268,8 +290,21 @@ func (s *BackfillService) run(ctx context.Context, jobID, expectedResource strin
 	} else if job.Status == JobFailed {
 		observeBackfillFailure()
 	}
+	// D52: creds work for this tenant again -> re-enrich refunds whose
+	// transfer enrichment was skipped (bounded batch). Best effort: a
+	// re-enrich error never changes the job result.
+	if runErr == nil && s.ReEnrichSkipped != nil {
+		if n, err := s.ReEnrichSkipped(ctx, job.TenantID, job.ConnectorID, job.ProviderMode, ReEnrichBatchSize); err != nil {
+			log.Printf("WARN backfill: re-enrich skipped refunds failed tenant_id=%s connector_id=%s reenriched=%d", job.TenantID, job.ConnectorID, n)
+		} else if n > 0 {
+			log.Printf("backfill: re-enriched skipped refunds tenant_id=%s connector_id=%s count=%d", job.TenantID, job.ConnectorID, n)
+		}
+	}
 	return SummaryFromJob(job, cursor), runErr
 }
+
+// ReEnrichBatchSize bounds one post-pull re-enrich pass per tenant+connector.
+const ReEnrichBatchSize = 200
 
 func (s *BackfillService) paginatePayments(ctx context.Context, job *BackfillJob, cursor *BackfillCursor, provider BackfillProvider) error {
 	for {
@@ -561,10 +596,62 @@ func redactError(err error) string {
 	return msg
 }
 
-// EnvCredentialResolver reads Test/Live Razorpay keys from process env.
-type EnvCredentialResolver struct{}
+// ErrNoTenantSecret means no per-tenant Razorpay credentials exist for the
+// requested tenant/connector. D32: recon never falls back to the shared,
+// process-wide RAZORPAY_KEY_* env for a tenant.
+var ErrNoTenantSecret = errors.New("no per-tenant Razorpay credentials configured for this tenant/connector")
 
-func (EnvCredentialResolver) Resolve(_ context.Context, _, _, mode string) (razorpay.Config, error) {
+// TenantCredentialSource returns one tenant connector's own Razorpay key pair.
+// Recon has no such store wired yet; when one exists, plug it in here.
+type TenantCredentialSource interface {
+	TenantCredentials(ctx context.Context, tenantID, connectorID, mode string) (keyID, keySecret string, err error)
+}
+
+// EnvCredentialResolver resolves Razorpay API credentials.
+//
+//   - Tenant scope (tenantID or connectorID set, e.g. backfill jobs): only the
+//     tenant's own credentials from Tenant. With no Tenant source, or no
+//     credentials for that tenant, it fails closed with ErrNoTenantSecret, even
+//     when RAZORPAY_KEY_ID/RAZORPAY_KEY_SECRET are set. The old behaviour
+//     silently used those shared keys for every tenant.
+//   - Platform scope (tenantID == "" and connectorID == ""): the process env
+//     key pair. Only the boot-time transfers enrichment client in cmd/main.go
+//     asks for this; it never serves a tenant-scoped request.
+type EnvCredentialResolver struct {
+	Tenant TenantCredentialSource
+}
+
+func (r EnvCredentialResolver) Resolve(ctx context.Context, tenantID, connectorID, mode string) (razorpay.Config, error) {
+	if mode == "live" && os.Getenv("RAZORPAY_ALLOW_LIVE") != "true" {
+		return razorpay.Config{}, fmt.Errorf("live mode is disabled")
+	}
+	if strings.TrimSpace(tenantID) == "" && strings.TrimSpace(connectorID) == "" {
+		return PlatformEnvCredentials(mode)
+	}
+	if r.Tenant == nil {
+		return razorpay.Config{}, ErrNoTenantSecret
+	}
+	keyID, keySecret, err := r.Tenant.TenantCredentials(ctx, tenantID, connectorID, mode)
+	if err != nil {
+		return razorpay.Config{}, err
+	}
+	if strings.TrimSpace(keyID) == "" || strings.TrimSpace(keySecret) == "" {
+		return razorpay.Config{}, ErrNoTenantSecret
+	}
+	cfg := razorpay.DefaultConfig()
+	cfg.Mode = razorpay.Mode(mode)
+	cfg.KeyID = keyID
+	cfg.KeySecret = keySecret
+	if err := cfg.Validate(); err != nil {
+		return razorpay.Config{}, err
+	}
+	return cfg, nil
+}
+
+// PlatformEnvCredentials reads the process-wide Test/Live key pair. It is for
+// platform-scope callers only (boot-time transfers enrichment), never for a
+// tenant's request.
+func PlatformEnvCredentials(mode string) (razorpay.Config, error) {
 	if mode == "live" && os.Getenv("RAZORPAY_ALLOW_LIVE") != "true" {
 		return razorpay.Config{}, fmt.Errorf("live mode is disabled")
 	}

@@ -1,32 +1,35 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { NextRequest } from 'next/server'
 import {
   applyRefreshedSessionCookies,
   resolveSettlementUploadContext,
   TENANT_MISMATCH_BODY,
 } from '@/services/auth/resolvePayoutTenant.server'
+import {
+  labelSettlementResponse,
+  relaySettlementUpstream,
+  resolveSettlementSource,
+  settlementJson,
+} from '@/services/settlementSource.server'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
 
-function settlementBase() {
-  const explicit =
-    process.env.ZORD_SETTLEMENT_URL?.trim() || process.env.SMOKE_SIMULATOR_URL?.trim()
-  if (explicit) return explicit.replace(/\/$/, '')
-  return 'http://localhost:8081'
-}
-
 /** Proxy: GET /api/prod/settlement/errors → outcome-engine settlement parse errors. */
 export async function GET(request: NextRequest) {
+  const resolved = resolveSettlementSource()
+  if (!resolved.ok) return resolved.response
+  const source = resolved.source
+
   const ctx = await resolveSettlementUploadContext(
     request,
     process.env.ZORD_SETTLEMENT_API_KEY ?? process.env.ZORD_BULK_INGEST_API_KEY,
   )
-  if (!ctx.ok) return ctx.response
+  if (!ctx.ok) return labelSettlementResponse(ctx.response, source)
   const tenantId = ctx.tenantId
 
   const queryTenant = request.nextUrl.searchParams.get('tenant_id')?.trim()
   if (queryTenant && queryTenant !== tenantId) {
-    const res = NextResponse.json(TENANT_MISMATCH_BODY, { status: 403 })
+    const res = settlementJson(TENANT_MISMATCH_BODY, source, { status: 403 })
     applyRefreshedSessionCookies(res, ctx.refreshedPayload)
     return res
   }
@@ -38,7 +41,7 @@ export async function GET(request: NextRequest) {
   const upstreamParams = new URLSearchParams({ tenant_id: tenantId })
   if (batchId) upstreamParams.set('batch_id', batchId)
 
-  const url = `${settlementBase()}/v1/settlement/errors?${upstreamParams.toString()}`
+  const url = `${source.baseUrl}/v1/settlement/errors?${upstreamParams.toString()}`
 
   try {
     const upstream = await fetch(url, {
@@ -52,23 +55,17 @@ export async function GET(request: NextRequest) {
       },
       cache: 'no-store',
     })
-    const text = await upstream.text()
-    const res = new NextResponse(text, {
-      status: upstream.status,
-      headers: {
-        'content-type': upstream.headers.get('content-type') || 'application/json; charset=utf-8',
-        'cache-control': 'no-store',
-      },
-    })
+    const res = await relaySettlementUpstream(upstream, source)
     applyRefreshedSessionCookies(res, ctx.refreshedPayload)
     return res
   } catch (error) {
-    const res = NextResponse.json(
+    const res = settlementJson(
       {
         error: 'settlement parse errors upstream unavailable',
         upstream: url,
         details: error instanceof Error ? error.message : 'unknown',
       },
+      source,
       { status: 502 },
     )
     applyRefreshedSessionCookies(res, ctx.refreshedPayload)

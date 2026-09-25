@@ -144,26 +144,30 @@ func markReceiptConflicted(ctx context.Context, tx *sql.Tx, eventID, incomingHas
 	return nil
 }
 
+// storedIntentRow is the canonical_intents snapshot existingIntentMatches
+// compares an incoming redelivery against.
+type storedIntentRow struct {
+	tenantID     uuid.UUID
+	traceID      uuid.NullUUID
+	contractID   uuid.NullUUID
+	payoutRef    sql.NullString
+	batchRef     sql.NullString
+	bizKey       sql.NullString
+	amount       decimal.Decimal
+	currency     string
+	execAt       sql.NullTime
+	payoutType   sql.NullString
+	provider     sql.NullString
+	corridor     sql.NullString
+	proof        float64
+	matchability float64
+	canonHash    string
+	gov          string
+	rowNum       sql.NullInt64
+}
+
 func existingIntentMatches(ctx context.Context, tx *sql.Tx, incoming models.CanonicalIntent) (bool, error) {
-	var (
-		tenantID       uuid.UUID
-		traceID        uuid.NullUUID
-		contractID     uuid.NullUUID
-		payoutRef      sql.NullString
-		batchRef       sql.NullString
-		bizKey         sql.NullString
-		amount         decimal.Decimal
-		currency       string
-		execAt         sql.NullTime
-		payoutType     sql.NullString
-		provider       sql.NullString
-		corridor       sql.NullString
-		proof          float64
-		matchability   float64
-		canonHash      string
-		gov            string
-		rowNum         sql.NullInt64
-	)
+	var row storedIntentRow
 	err := tx.QueryRowContext(ctx, `
 		SELECT tenant_id, trace_id, contract_id,
 		       client_payout_ref, client_batch_ref, business_idempotency_key,
@@ -176,12 +180,12 @@ func existingIntentMatches(ctx context.Context, tx *sql.Tx, incoming models.Cano
 		FOR UPDATE`,
 		incoming.IntentID,
 	).Scan(
-		&tenantID, &traceID, &contractID,
-		&payoutRef, &batchRef, &bizKey,
-		&amount, &currency, &execAt,
-		&payoutType, &provider, &corridor,
-		&proof, &matchability,
-		&canonHash, &gov, &rowNum,
+		&row.tenantID, &row.traceID, &row.contractID,
+		&row.payoutRef, &row.batchRef, &row.bizKey,
+		&row.amount, &row.currency, &row.execAt,
+		&row.payoutType, &row.provider, &row.corridor,
+		&row.proof, &row.matchability,
+		&row.canonHash, &row.gov, &row.rowNum,
 	)
 	if err == sql.ErrNoRows {
 		return false, fmt.Errorf("canonical_intents missing after conflict-do-nothing intent_id=%s", incoming.IntentID)
@@ -189,40 +193,62 @@ func existingIntentMatches(ctx context.Context, tx *sql.Tx, incoming models.Cano
 	if err != nil {
 		return false, fmt.Errorf("canonical_intents lookup: %w", err)
 	}
+	return storedIntentMatches(row, incoming), nil
+}
 
-	if tenantID != incoming.TenantID {
-		return false, nil
+// storedIntentMatches reports whether an incoming redelivery carries the same
+// content as the stored intent. Amount is always compared exactly, so a
+// changed amount is CONFLICTED even when the business key matches.
+func storedIntentMatches(row storedIntentRow, incoming models.CanonicalIntent) bool {
+	if row.tenantID != incoming.TenantID {
+		return false
 	}
-	if !uuidEq(contractID, incoming.ContractID) {
-		return false, nil
+	if !uuidEq(row.contractID, incoming.ContractID) {
+		return false
 	}
-	if !amount.Equal(incoming.Amount) || currency != incoming.CurrencyCode {
-		return false, nil
+	if !row.amount.Equal(incoming.Amount) || row.currency != incoming.CurrencyCode {
+		return false
 	}
-	if canonHash != incoming.CanonicalHash || gov != incoming.GovernanceState {
-		return false, nil
+	if row.canonHash != incoming.CanonicalHash || row.gov != incoming.GovernanceState {
+		return false
 	}
-	if !scoreEq(proof, incoming.ProofReadinessScore) || !scoreEq(matchability, incoming.MatchabilityScore) {
-		return false, nil
+	if !scoreEq(row.proof, incoming.ProofReadinessScore) || !scoreEq(row.matchability, incoming.MatchabilityScore) {
+		return false
 	}
-	if !uuidPtrEq(traceID, incoming.TraceID) {
-		return false, nil
+	if !uuidPtrEq(row.traceID, incoming.TraceID) {
+		return false
 	}
-	if !nullStringEq(payoutRef, incoming.ClientPayoutRef) ||
-		!nullStringEq(batchRef, incoming.ClientBatchRef) ||
-		!nullStringEq(bizKey, incoming.BusinessIdempotencyKey) ||
-		!nullStringEq(payoutType, incoming.PayoutType) ||
-		!nullStringEq(provider, incoming.ProviderHint) ||
-		!nullStringEq(corridor, incoming.Corridor) {
-		return false, nil
+	if !nullStringEq(row.payoutRef, incoming.ClientPayoutRef) ||
+		!nullStringEq(row.batchRef, incoming.ClientBatchRef) ||
+		!businessKeyEq(row.bizKey, incoming.BusinessIdempotencyKey, incoming.BusinessIdempotencyKeyV1) ||
+		!nullStringEq(row.payoutType, incoming.PayoutType) ||
+		!nullStringEq(row.provider, incoming.ProviderHint) ||
+		!nullStringEq(row.corridor, incoming.Corridor) {
+		return false
 	}
-	if !nullTimeEq(execAt, incoming.IntendedExecutionAt) {
-		return false, nil
+	if !nullTimeEq(row.execAt, incoming.IntendedExecutionAt) {
+		return false
 	}
-	if !nullIntEq(rowNum, incoming.SourceRowNum) {
-		return false, nil
+	if !nullIntEq(row.rowNum, incoming.SourceRowNum) {
+		return false
 	}
-	return true, nil
+	return true
+}
+
+// businessKeyEq accepts either generation of the intent engine's business
+// idempotency key during the v1 -> v2 transition (Slice 8): the stored key
+// may be v1 (written before the rollout) while a redelivery carries v2 as
+// business_idempotency_key plus the legacy v1 as business_idempotency_key_v1.
+// A stored v2 against an incoming payload that only has v1 cannot be proven
+// equal here and stays a mismatch (CONFLICTED), which is the safe default.
+func businessKeyEq(stored sql.NullString, incoming *string, incomingLegacy *string) bool {
+	if nullStringEq(stored, incoming) {
+		return true
+	}
+	if !stored.Valid || stored.String == "" || incomingLegacy == nil || *incomingLegacy == "" {
+		return false
+	}
+	return stored.String == *incomingLegacy
 }
 
 func scoreEq(a, b float64) bool {

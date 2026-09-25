@@ -1,21 +1,24 @@
-import { NextRequest, NextResponse } from 'next/server'
-import { getIntentDetail } from '@/services/analytics'
-import { resolveRequestContext, withNoStore } from '../../../helpers'
+import type { NextRequest } from 'next/server'
+import { demoJson, resolveRequestContext, withDemoAnalytics, withNoStore } from '../../../demoGate'
 
 export const dynamic = 'force-dynamic'
 
 export async function GET(request: NextRequest, { params }: { params: { id: string } }) {
-  const ctx = resolveRequestContext(request)
-  if (ctx.response) return ctx.response
+  return withDemoAnalytics((analytics) => {
+    const ctx = resolveRequestContext(analytics, request)
+    if (ctx.response) return ctx.response
 
-  try {
-    const detail = getIntentDetail(ctx.tenantId, params.id)
-    if (!detail) {
-      return NextResponse.json({ error: 'Intent not found' }, { status: 404 })
+    try {
+      const detail = analytics.getIntentDetail(ctx.tenantId, params.id)
+      if (!detail) {
+        return demoJson({ error: 'Intent not found' }, { status: 404 })
+      }
+      return withNoStore(demoJson(detail))
+    } catch (error) {
+      return demoJson(
+        { error: 'Failed to load intent detail', detail: error instanceof Error ? error.message : 'unknown error' },
+        { status: 500 },
+      )
     }
-
-    return withNoStore(NextResponse.json(detail))
-  } catch (error) {
-    return NextResponse.json({ error: 'Failed to load intent detail', detail: error instanceof Error ? error.message : 'unknown error' }, { status: 500 })
-  }
+  })
 }

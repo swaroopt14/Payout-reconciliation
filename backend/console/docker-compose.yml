@@ -23,6 +23,13 @@ services:
       - ZORD_BULK_INGEST_API_KEY=${ZORD_BULK_INGEST_API_KEY:-}
       - SLACK_LEADS_WEBHOOK_URL=${SLACK_LEADS_WEBHOOK_URL:-}
       - SLACK_SUPPORT_WEBHOOK_URL=${SLACK_SUPPORT_WEBHOOK_URL:-}
+      # Seeded demo analytics on /api/prod/zord/* — default off (410). Demo only.
+      - CLEARLINE_DEMO_ANALYTICS=${CLEARLINE_DEMO_ANALYTICS:-0}
+      # Fixture-cash simulator for settlement/recon/cash routes - default off (503 when no live URL).
+      # Separate from CLEARLINE_DEMO_ANALYTICS so demo analytics never unlocks fixture cash.
+      - CLEARLINE_DEMO_SETTLEMENT_SIMULATOR=${CLEARLINE_DEMO_SETTLEMENT_SIMULATOR:-0}
+      # Only used when the flag above is on (or to recognise a ZORD_*_URL that points at it).
+      - SMOKE_SIMULATOR_URL=${SMOKE_SIMULATOR_URL:-}
       - ZORD_BULK_INGEST_SOURCE_TYPE=${ZORD_BULK_INGEST_SOURCE_TYPE:-CSV}
       - ZORD_BULK_INGEST_SOURCE_CLASS=${ZORD_BULK_INGEST_SOURCE_CLASS:-INTENT}
       - ZORD_EDGE_URL=${ZORD_EDGE_URL:-http://host.docker.internal:8080}
@@ -35,7 +42,9 @@ services:
       - ZORD_EVIDENCE_URL=${ZORD_EVIDENCE_URL:-http://host.docker.internal:8088}
       - ZORD_CONTRACTS_URL=${ZORD_CONTRACTS_URL:-http://host.docker.internal:8084}
       - ZORD_PII_ENCLAVE_URL=${ZORD_PII_ENCLAVE_URL:-http://host.docker.internal:8085}
-      - ZORD_ROUTER_URL=${ZORD_ROUTER_URL:-http://host.docker.internal:8091}
+      # Router: required in every env (D28). Container-internal URL on zord-shared-network.
+      - ZORD_ROUTER_URL=${ROUTER_URL:?set ROUTER_URL (e.g. http://zord-router:8091)}
+      - ROUTER_AUTH_TOKEN=${ROUTER_AUTH_TOKEN:?set ROUTER_AUTH_TOKEN (must match zord-router)}
     volumes:
       # Persist support tickets across container restarts (see services/support/supportTicketStore.server.ts).
       - ./.data:/app/.data

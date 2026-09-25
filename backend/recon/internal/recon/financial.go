@@ -81,6 +81,26 @@ type RefundFact struct {
 	// ObservedAt is when the refund observation was seen (DB created_at).
 	// Used only for schedule projection timing; zero means unknown timing.
 	ObservedAt time.Time `json:"observed_at,omitempty"`
+	// EnrichmentStatus records whether payment→transfers enrichment ran (D52).
+	// "" = not attempted (legacy rows / no lookup wired). A skipped_* row has
+	// an unknown marketplace shape: it is NOT "no marketplace".
+	EnrichmentStatus string `json:"enrichment_status,omitempty"`
+}
+
+// Refund enrichment statuses (provider_refund_observations.enrichment_status).
+const (
+	EnrichmentEnriched           = "enriched"
+	EnrichmentNoTransfers        = "no_transfers"
+	EnrichmentSkippedNoCreds     = "skipped_no_creds"
+	EnrichmentSkippedUnavailable = "skipped_unavailable"
+)
+
+// EnrichmentSkipped reports whether transfer enrichment was skipped for this
+// refund (no tenant credentials, or the credential source was down). Such a
+// refund stays out of seller patterns and the refund-without-reversal check
+// until the D26 pull re-enriches it (D52, D47, D48).
+func (r RefundFact) EnrichmentSkipped() bool {
+	return strings.HasPrefix(strings.TrimSpace(r.EnrichmentStatus), "skipped_")
 }
 
 // JoinsSellerCluster is the Slice 1 cluster-join predicate for later Marketplace
@@ -102,7 +122,18 @@ type PayoutFact struct {
 	ProviderCreatedAt time.Time
 	FirstObservedAt   time.Time
 	BatchID           string
+	// Origin is additive: "" / PayoutOriginProvider for provider-observed
+	// payouts, PayoutOriginFileIntent for rows seeded from an uploaded payout
+	// file before any provider observation is linked. Empty means provider.
+	Origin string
+	// AmountConflictMinor (B5): a later provider observation reported a
+	// different amount; AmountMinor keeps the first. nil = no conflict.
+	AmountConflictMinor *int64
 }
+
+// ReasonProviderPayoutAmountChanged: the provider reported two different
+// amounts for one payout. The first is kept; the result is VARIANCE.
+const ReasonProviderPayoutAmountChanged = "provider_payout_amount_changed"
 
 type PayoutInput struct {
 	Payout     PayoutFact
@@ -151,6 +182,9 @@ type FinancialResult struct {
 	MerchantAgreed   bool
 	CreatedAt        time.Time
 	Exception        *ReconciliationException
+	// SellerID is read-time only (not persisted on results): copied from a
+	// stored transfer-edge / refund seller_id. Empty when unknown (D48).
+	SellerID string
 }
 
 func ReconcilePayment(in FinancialInput) FinancialResult {
@@ -714,4 +748,13 @@ func MarkAmbiguous(out FinancialResult, candidates []string) FinancialResult {
 	out.BankCreditProven = false
 	out.Confidence = 0.45
 	return withException(out, ResultAmbiguous, out.Reason, out.Confidence)
+}
+
+// SkippedEnrichmentCounts is the D52 data-gap count: refunds whose
+// payment→transfers enrichment was skipped, by reason. Counts only; no amounts.
+type SkippedEnrichmentCounts struct {
+	TenantID    string           `json:"tenant_id"`
+	ConnectorID string           `json:"connector_id,omitempty"`
+	Total       int64            `json:"total"`
+	ByReason    map[string]int64 `json:"by_reason"`
 }

@@ -10,6 +10,8 @@
     "start:standalone": "node .next/standalone/server.js",
     "lint": "next lint",
     "test:e2e": "playwright test",
+    "test:zord-demo-gate": "node --import ./scripts/test-support/register-ts-loader.mjs --test scripts/test-zord-demo-gate.mjs",
+    "test:settlement-source-gate": "node --import ./scripts/test-support/register-ts-loader.mjs --test scripts/test-settlement-source-gate.mjs",
     "verify:api-routes": "node scripts/verify-payout-api-routes.mjs && node scripts/verify-console-page-routes.mjs && node scripts/verify-tenant-batch-scope.mjs && node scripts/verify-journal-api-metrics.mjs && node scripts/verify-payout-mock-allowlist.mjs",
     "verify:tenant-scope": "node scripts/verify-tenant-batch-scope.mjs",
     "clean": "rm -rf .next node_modules/.cache",

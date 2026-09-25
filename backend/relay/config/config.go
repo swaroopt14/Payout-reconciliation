@@ -2,6 +2,9 @@ package config
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -242,6 +245,13 @@ type MetricsConfig struct {
 // Environment variables override file values.
 // Prefix: RELAY_ (e.g. RELAY_PSP_BASE_URL, RELAY_TOKEN_ENCLAVE_BASE_URL)
 func Load() (*Config, error) {
+	return LoadFrom(".", "./config", "/etc/relay")
+}
+
+// LoadFrom is Load with an explicit list of directories searched for
+// config.yaml (first match wins). RELAY_CONFIG_FILE, when set, takes
+// precedence over the search path.
+func LoadFrom(dirs ...string) (*Config, error) {
 	v := viper.New()
 
 	// ── Relay defaults ──────────────────────────────────────────────────────
@@ -274,7 +284,10 @@ func Load() (*Config, error) {
 	v.SetDefault("token_enclave.timeout_seconds", 10)
 
 	// ── Dispatch defaults ───────────────────────────────────────────────────
-	v.SetDefault("dispatch.enabled", true)
+	// Dispatch sends real money. It stays OFF unless explicitly enabled
+	// (D27: only Swaroop turns it on). A missing config file must never
+	// silently enable it.
+	v.SetDefault("dispatch.enabled", false)
 	v.SetDefault("dispatch.consumer_group_id", "dispatch-loop-group")
 	v.SetDefault("dispatch.topic", "payments.intent.events.v1")
 	v.SetDefault("dispatch.poll_timeout", "200ms")
@@ -311,18 +324,19 @@ func Load() (*Config, error) {
 	v.SetDefault("metrics.addr", ":9090")
 
 	// ── File ────────────────────────────────────────────────────────────────
-	v.SetConfigName("config")
+	// The file is read with ${VAR} / ${VAR:-default} expansion so secrets
+	// (auth tokens, DB URL) live in env, never in the committed yaml (D32).
 	v.SetConfigType("yaml")
-	v.AddConfigPath(".")
-	v.AddConfigPath("./config")
-	v.AddConfigPath("/etc/relay")
-
-	if err := v.ReadInConfig(); err != nil {
-		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
+	if path := findConfigFile(dirs); path != "" {
+		raw, err := os.ReadFile(path)
+		if err != nil {
 			return nil, fmt.Errorf("reading config file: %w", err)
 		}
-		// Config file is optional; env vars alone are valid.
+		if err := v.ReadConfig(strings.NewReader(ExpandEnv(string(raw)))); err != nil {
+			return nil, fmt.Errorf("reading config file: %w", err)
+		}
 	}
+	// Config file is optional; env vars alone are valid.
 
 	// ── Environment variable overrides ──────────────────────────────────────
 	// All env vars are prefixed RELAY_ with dots replaced by underscores.
@@ -406,4 +420,35 @@ func (s *ServiceConfig) RetryConfig() (maxAttempts int, baseDelay, maxDelay time
 		maxDelay = 5 * time.Minute
 	}
 	return
+}
+
+func findConfigFile(dirs []string) string {
+	if p := strings.TrimSpace(os.Getenv("RELAY_CONFIG_FILE")); p != "" {
+		return p
+	}
+	for _, d := range dirs {
+		for _, name := range []string{"config.yaml", "config.yml"} {
+			p := filepath.Join(d, name)
+			if st, err := os.Stat(p); err == nil && !st.IsDir() {
+				return p
+			}
+		}
+	}
+	return ""
+}
+
+var envRefPattern = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}`)
+
+// ExpandEnv replaces ${VAR} and ${VAR:-default} references with values from
+// the environment. An unset or empty VAR without a default expands to "",
+// which validate() then rejects for required fields (auth tokens, db.url).
+// Bare $VAR (no braces) is left untouched so literal dollars stay intact.
+func ExpandEnv(in string) string {
+	return envRefPattern.ReplaceAllStringFunc(in, func(m string) string {
+		sub := envRefPattern.FindStringSubmatch(m)
+		if val := os.Getenv(sub[1]); val != "" {
+			return val
+		}
+		return sub[2]
+	})
 }

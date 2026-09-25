@@ -33,7 +33,14 @@ type MarketplacePatternAdvisory struct {
 // Failed/cancelled must not inflate seller velocity SUM/COUNT as cash out
 // (pattern ≠ cash; processed ≠ bank double-count). Include processed and
 // in-flight statuses (created/pending/etc.) that represent refund activity.
+//
+// A refund whose transfer enrichment was skipped (D52) never counts: its
+// marketplace shape is unknown, so it must not feed seller patterns (D48) or
+// the refund-without-reversal check (D47), which both use this predicate.
 func CountsTowardSellerPattern(r RefundFact) bool {
+	if r.EnrichmentSkipped() {
+		return false
+	}
 	switch strings.ToLower(strings.TrimSpace(r.ProviderStatus)) {
 	case "failed", "cancelled", "canceled":
 		return false

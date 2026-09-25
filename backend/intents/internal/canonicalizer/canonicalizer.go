@@ -7,10 +7,10 @@ import (
 )
 
 type MappingProfile struct {
-	ProfileID   string            `json:"profile_id"`
-	Version     string            `json:"version"`
+	ProfileID    string            `json:"profile_id"`
+	Version      string            `json:"version"`
 	MappingRules map[string]string `json:"mapping_rules"`
-	IsActive    bool              `json:"is_active"`
+	IsActive     bool              `json:"is_active"`
 }
 
 func CanonicalizeIntent(input models.ParsedIncomingIntent) models.ParsedIncomingIntent {
@@ -53,13 +53,25 @@ func CanonicalizeIntent(input models.ParsedIncomingIntent) models.ParsedIncoming
 	return out
 }
 
-// normalization
+// normalizeAmountValue returns the amount as an exact decimal string. It
+// only drops redundant leading zeros from the integer part and always keeps
+// one digit before the decimal point ("0.50" stays "0.50", "00012.30" ->
+// "12.30", ".50" -> "0.50"). The fractional part, including trailing zeros,
+// is never touched, so no precision is gained or lost (D10). A leading sign
+// is preserved so negative amounts still reach the governance checks.
 func normalizeAmountValue(v string) string {
 	v = strings.TrimSpace(v)
-	v = strings.TrimLeft(v, "0")
-
-	if v == "" {
-		return "0"
+	sign := ""
+	if strings.HasPrefix(v, "-") || strings.HasPrefix(v, "+") {
+		sign, v = v[:1], v[1:]
 	}
-	return v
+	intPart, frac, hasFrac := strings.Cut(v, ".")
+	intPart = strings.TrimLeft(intPart, "0")
+	if intPart == "" {
+		intPart = "0"
+	}
+	if hasFrac {
+		return sign + intPart + "." + frac
+	}
+	return sign + intPart
 }

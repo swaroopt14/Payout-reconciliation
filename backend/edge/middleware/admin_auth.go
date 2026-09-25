@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"crypto/subtle"
 	"log/slog"
 	"net/http"
 	"os"
@@ -27,7 +28,7 @@ func AdminAuthMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		if adminKey == "" || adminKey != expectedKey {
+		if adminKey == "" || subtle.ConstantTimeCompare([]byte(adminKey), []byte(expectedKey)) != 1 {
 			logger.Log.Warn("unauthorized admin access attempt",
 				slog.String("ip", c.ClientIP()),
 				slog.String("path", c.Request.URL.Path))

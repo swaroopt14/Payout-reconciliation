@@ -334,10 +334,17 @@ struct TestClaims {
     tenant_id: String,
     user_id: String,
     iss: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    aud: Option<String>,
     exp: usize,
 }
 
 fn mint_jwt(secret: &str, tenant: &str) -> String {
+    mint_jwt_aud(secret, tenant, Some("zord-console"))
+}
+
+// Edge (backend/edge/services/jwt_service.go) mints aud = "zord-console".
+fn mint_jwt_aud(secret: &str, tenant: &str, aud: Option<&str>) -> String {
     let exp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
@@ -349,6 +356,7 @@ fn mint_jwt(secret: &str, tenant: &str) -> String {
             tenant_id: tenant.into(),
             user_id: "user-1".into(),
             iss: "zord-edge".into(),
+            aud: aud.map(str::to_string),
             exp,
         },
         &EncodingKey::from_secret(secret.as_bytes()),
@@ -361,6 +369,7 @@ fn jwt_state() -> AppState {
     config.router_auth_token = None;
     config.jwt_signing_secret = Some("jwt-secret-for-tests".into());
     config.jwt_issuer = "zord-edge".into();
+    config.jwt_audience = "zord-console".into();
     AppState::memory_only(config)
 }
 
@@ -412,4 +421,52 @@ async fn routing_route_rejects_jwt_tenant_mismatch() {
         .unwrap();
     let response = app(jwt_state()).oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+fn jwt_route_request(token: &str, payment_id: &str) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri("/v1/routing/route")
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {token}"))
+        .header("x-tenant-id", "tenant-a")
+        .body(Body::from(
+            json!({
+                "payment_id": payment_id,
+                "tenant_id": "tenant-a",
+                "amount_minor": 1000,
+                "currency": "INR",
+                "payment_method": "IMPS",
+                "direction": "OUTBOUND"
+            })
+            .to_string(),
+        ))
+        .unwrap()
+}
+
+#[tokio::test]
+async fn routing_route_accepts_edge_audience_zord_console() {
+    let token = mint_jwt_aud("jwt-secret-for-tests", "tenant-a", Some("zord-console"));
+    let response = app(jwt_state()).oneshot(jwt_route_request(&token, "pout_aud_ok")).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn routing_route_rejects_wrong_audience() {
+    let token = mint_jwt_aud("jwt-secret-for-tests", "tenant-a", Some("some-other-app"));
+    let response = app(jwt_state()).oneshot(jwt_route_request(&token, "pout_aud_bad")).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn routing_route_rejects_missing_audience() {
+    let token = mint_jwt_aud("jwt-secret-for-tests", "tenant-a", None);
+    let response = app(jwt_state()).oneshot(jwt_route_request(&token, "pout_aud_none")).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[test]
+fn router_default_audience_matches_edge() {
+    std::env::remove_var("JWT_AUDIENCE");
+    assert_eq!(Config::from_env().jwt_audience, "zord-console");
 }

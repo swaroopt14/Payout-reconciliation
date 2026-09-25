@@ -16,8 +16,8 @@ import (
 func testConfig() Config {
 	return Config{
 		BaseURL:     "http://localhost:0", // overridden by test server
-		KeyID:       "rzp_test_TVY5EjjWRxV6HQ",
-		KeySecret:   "cXnP5nmuKcmBfM6doKkVK1sP",
+		KeyID:       "rzp_test_FAKEKEYID",
+		KeySecret:   "fake_key_secret_not_real",
 		Mode:        ModeTest,
 		Timeout:     10 * time.Second,
 		MaxRetries:  3,

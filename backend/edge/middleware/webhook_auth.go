@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"zord-edge/db"
+	"zord-edge/internal/tenantsecret"
 	"zord-edge/logger"
 
 	"github.com/gin-gonic/gin"
@@ -41,11 +42,12 @@ func LookupConnectorBinding(provider, connectorID string) (*ConnectorBinding, er
 		LIMIT 1
 	`
 
+	var stored sql.NullString
 	err := db.DB.QueryRow(query, provider, connectorID).Scan(
 		&binding.TenantID,
 		&binding.ConnectorID,
 		&binding.Provider,
-		&binding.Secret,
+		&stored,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -53,6 +55,13 @@ func LookupConnectorBinding(provider, connectorID string) (*ConnectorBinding, er
 		}
 		return nil, err
 	}
+	// D32: connectors.secret is stored encrypted (enc:v1:). Decrypt; a missing
+	// secret, missing key or legacy plaintext fails closed (no global fallback).
+	plain, err := tenantsecret.ResolveWebhookSecret(stored.String, "")
+	if err != nil {
+		return nil, err
+	}
+	binding.Secret = plain
 	return &binding, nil
 }
 

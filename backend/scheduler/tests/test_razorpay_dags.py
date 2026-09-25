@@ -14,6 +14,7 @@ class TestRazorpayDags(unittest.TestCase):
         files = [
             "dags/razorpay_payment_backfill_dag.py",
             "dags/razorpay_settlement_backfill_dag.py",
+            "dags/razorpay_payout_backfill_dag.py",
             "dags/reconciliation_freshness_dag.py",
             "dags/signal_recon_dag.py",
             "plugins/operators/zord_backfill_operator.py",
@@ -29,6 +30,8 @@ class TestRazorpayDags(unittest.TestCase):
         self.assertIn("X-Relay-Token", body)
         self.assertIn("/internal/backfill/payments", body)
         self.assertIn("/internal/backfill/settlements", body)
+        self.assertIn("/internal/backfill/payouts", body)
+        self.assertIn("X-Relay-Tenant-ID", body)
         self.assertIn("/internal/freshness/{job_id}", body)
         self.assertIn("/internal/recon/run", body)
         self.assertIn("/internal/reconciliation/run", body)

@@ -5,8 +5,8 @@ services:
     environment:
       POSTGRES_DB: smoke_audit
       POSTGRES_USER: smoke
-      # Smoke demo only — hardcoded so no .env is required
-      POSTGRES_PASSWORD: eXDQTEFNyzogVqq4fkgPSMbqJWWoUGPv
+      # Smoke demo only. Env-only since Slice 8 (D32); the old committed value must be rotated.
+      POSTGRES_PASSWORD: ${SMOKE_POSTGRES_PASSWORD:?set SMOKE_POSTGRES_PASSWORD (see .env.example)}
     volumes:
       - smoke_pg_data:/var/lib/postgresql/data
       - ./sql/001_smoke_login_audit.sql:/docker-entrypoint-initdb.d/001_smoke_login_audit.sql:ro
@@ -39,8 +39,8 @@ services:
       SMOKE_UPLOAD_FIRST: "${SMOKE_UPLOAD_FIRST:-1}"
       ZORD_AUTH_REQUIRED: "${ZORD_AUTH_REQUIRED:-1}"
       ZORD_DEMO_LOGIN_ENABLED: "${ZORD_DEMO_LOGIN_ENABLED:-0}"
-      ZORD_LOGIN_USERS: "${ZORD_LOGIN_USERS:-blank@company.com:YourLongPassword;demo@test123:Test@12344;demo@company.com:YourLongPassword}"
-      DATABASE_URL: postgres://smoke:eXDQTEFNyzogVqq4fkgPSMbqJWWoUGPv@smoke-postgres:5432/smoke_audit
+      ZORD_LOGIN_USERS: "${ZORD_LOGIN_USERS:?set ZORD_LOGIN_USERS (email:password;... see .env.example)}"
+      DATABASE_URL: postgres://smoke:${SMOKE_POSTGRES_PASSWORD:?set SMOKE_POSTGRES_PASSWORD}@smoke-postgres:5432/smoke_audit
       SMOKE_DATA_DIR: /app/data
     volumes:
       - ./data:/app/data

@@ -1,29 +1,5 @@
-import { NextRequest, NextResponse } from 'next/server'
-import { getTimeRangeParam, resolveTenantId } from '@/services/analytics'
+// Shared zord analytics helpers. No static import of services/analytics here —
+// the seeded store is loaded only through withDemoAnalytics (demoGate.ts) when the demo flag is on.
+export { resolveRequestContext, withNoStore, withDemoAnalytics, demoJson } from './demoGate'
 
 export const dynamic = 'force-dynamic'
-
-export function resolveRequestContext(request: NextRequest): {
-  tenantId: string
-  timeRange: string
-  response?: NextResponse
-} {
-  const tenant = resolveTenantId(request)
-  if (tenant.error) {
-    return {
-      tenantId: tenant.tenantId,
-      timeRange: getTimeRangeParam(request),
-      response: NextResponse.json({ error: tenant.error }, { status: 400 }),
-    }
-  }
-
-  return {
-    tenantId: tenant.tenantId,
-    timeRange: getTimeRangeParam(request),
-  }
-}
-
-export function withNoStore(response: NextResponse): NextResponse {
-  response.headers.set('Cache-Control', 'no-store, max-age=0')
-  return response
-}

@@ -29,12 +29,22 @@ ZORD_OUTCOME_ENGINE_CONN_ID = "zord_outcome_engine_http"
 FINANCIAL_RECON_ENDPOINT = RECON_RUN_ENDPOINT
 
 
-def _headers():
+# Recon's relayTenantMustMatch (backend/recon/handlers/relay_tenant.go) answers
+# 403 relay_tenant_required without this header, 403 tenant_mismatch if it
+# differs from body.tenant_id. Value always comes from the pinned run body.
+RELAY_TENANT_HEADER = "X-Relay-Tenant-ID"
+
+
+def _headers(tenant_id: str):
     token = os.environ.get("RELAY_AUTH_TOKEN") or Variable.get("relay_auth_token", default="")
+    tenant = str(tenant_id or "").strip()
+    if not tenant:
+        raise ValueError("tenant_id is required (X-Relay-Tenant-ID)")
     return {
         "Content-Type": "application/json",
         "X-Relay-Token": token,
         "X-Relay-Instance-ID": "airflow-signal-recon",
+        RELAY_TENANT_HEADER: tenant,
     }
 
 
@@ -130,7 +140,7 @@ def run_signal_recon(**context) -> dict:
     response = hook.run(
         endpoint=req["endpoint"],
         data=json.dumps(req["body"]),
-        headers=_headers(),
+        headers=_headers(req["body"]["tenant_id"]),
     )
     result = response.json()
     result["_signal"] = payload.get("signal")

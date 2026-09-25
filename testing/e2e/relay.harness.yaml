@@ -1,0 +1,254 @@
+# Relay config for the B12 E2E harness (mounted at /etc/relay/harness.yaml,
+# selected with RELAY_CONFIG_FILE). Structure copied from
+# backend/relay/config.yaml. Differences:
+#   * services: only intent-engine, ledger-service, outcome-engine, pointed
+#     at the harness containers (no evidence-service, dlq or batch pollers);
+#   * single plaintext broker, tracing off, metrics/health on :8082;
+#   * dispatch.enabled false (env RELAY_DISPATCH_ENABLED overrides; the
+#     compose preflight enforces the Mode B guards).
+# No secrets inline: ${VAR} references are expanded from env by
+# config.ExpandEnv, and RELAY_* env vars override scalar keys (viper).
+relay:
+  poll_interval: 2s
+  lease_limit: 500
+  lease_ttl_seconds: 120
+  max_publish_concurrency: 10
+  shutdown_timeout: 30s
+  operator_api_enabled: true
+  operator_auth_token: "${RELAY_OPERATOR_AUTH_TOKEN}"
+
+kafka:
+  brokers: "${RELAY_KAFKA_BROKERS:-kafka:9092}"
+  # Plaintext single-node broker; no SASL/TLS in the harness.
+  sasl_mechanism: ""
+  sasl_username: ""
+  sasl_password: ""
+  tls_enabled: false
+  acks: "all"
+  linger_ms: 5
+  compression_type: snappy
+  message_max_bytes: 1048576
+  delivery_timeout: 30s
+  dlq_publish_failure_topic: relay.dlq.publish_failure
+  dlq_poison_topic: relay.dlq.poison
+
+services:
+  - name: intent-engine
+    base_url: http://intents:8083
+    auth_token: "${RELAY_AUTH_TOKEN}"
+    http_timeout: 15s
+    default_topic: payments.intent.events.v1
+    is_intent: true
+    route_allow_list:
+      - source_service: "zord-intent-engine"
+        event_type: "intent.created.v1"
+        event_version: "v1"
+        schema_version: "v1"
+        topic: "payments.intent.events.v1"
+      - source_service: "zord-intent-engine"
+        event_type: "intent.created.v1"
+        event_version: ""
+        schema_version: ""
+        topic: "payments.intent.events.v1"
+      - source_service: "zord-intent-engine"
+        event_type: "vector.index.requested"
+        event_version: "v1"
+        schema_version: "v1"
+        topic: "zord.vector.index.request.v1"
+      - source_service: "zord-intent-engine"
+        event_type: "vector.index.requested"
+        event_version: ""
+        schema_version: ""
+        topic: "zord.vector.index.request.v1"
+
+  - name: ledger-service
+    base_url: http://edge:8080
+    auth_token: "${RELAY_AUTH_TOKEN}"
+    http_timeout: 15s
+    default_topic: payments.ledger.events.v1
+    is_edge: true
+    route_allow_list:
+      - source_service: "zord-edge-service"
+        event_type: "ledger.entry.created"
+        event_version: "v1"
+        schema_version: "v1"
+        topic: "payments.ledger.events.v1"
+      - source_service: "zord-edge-service"
+        event_type: "ledger.entry.created"
+        event_version: ""
+        schema_version: ""
+        topic: "payments.ledger.events.v1"
+
+  - name: outcome-engine
+    base_url: http://recon:8081
+    auth_token: "${RELAY_AUTH_TOKEN}"
+    http_timeout: 15s
+    default_topic: payments.outcome.events.v1
+    route_allow_list:
+      - source_service: ""
+        event_type: "canonical.settlement.created"
+        event_version: "v1"
+        schema_version: "v1"
+        topic: "canonical.settlement.created"
+      - source_service: ""
+        event_type: "canonical.settlement.created"
+        event_version: ""
+        schema_version: ""
+        topic: "canonical.settlement.created"
+      - source_service: ""
+        event_type: "attachment.decision.created"
+        event_version: "v1"
+        schema_version: "v1"
+        topic: "attachment.decision.created"
+      - source_service: ""
+        event_type: "attachment.decision.created"
+        event_version: ""
+        schema_version: ""
+        topic: "attachment.decision.created"
+      - source_service: ""
+        event_type: "variance.record.created"
+        event_version: "v1"
+        schema_version: "v1"
+        topic: "variance.record.created"
+      - source_service: ""
+        event_type: "variance.record.created"
+        event_version: ""
+        schema_version: ""
+        topic: "variance.record.created"
+      - source_service: ""
+        event_type: "attachment.batch.updated"
+        event_version: "v1"
+        schema_version: "v1"
+        topic: "batch.summary.updated"
+      - source_service: ""
+        event_type: "attachment.batch.updated"
+        event_version: ""
+        schema_version: ""
+        topic: "batch.summary.updated"
+      - source_service: ""
+        event_type: "outcome.leaf_bundle.created"
+        event_version: "v1"
+        schema_version: "v1"
+        topic: "payments.outcome.events.v1"
+      - source_service: ""
+        event_type: "outcome.leaf_bundle.created"
+        event_version: ""
+        schema_version: ""
+        topic: "payments.outcome.events.v1"
+      - source_service: ""
+        event_type: "attachment.unresolved.flagged"
+        event_version: "v1"
+        schema_version: "v1"
+        topic: "attachment.unresolved.flagged"
+      - source_service: ""
+        event_type: "attachment.unresolved.flagged"
+        event_version: ""
+        schema_version: ""
+        topic: "attachment.unresolved.flagged"
+      - source_service: ""
+        event_type: "attachment.ambiguous.flagged"
+        event_version: "v1"
+        schema_version: "v1"
+        topic: "attachment.ambiguous.flagged"
+      - source_service: ""
+        event_type: "attachment.ambiguous.flagged"
+        event_version: ""
+        schema_version: ""
+        topic: "attachment.ambiguous.flagged"
+      - source_service: ""
+        event_type: "attachment.review.required"
+        event_version: "v1"
+        schema_version: "v1"
+        topic: "attachment.review.required"
+      - source_service: ""
+        event_type: "attachment.review.required"
+        event_version: ""
+        schema_version: ""
+        topic: "attachment.review.required"
+      - source_service: ""
+        event_type: "merchant.books.normalized.v1"
+        event_version: "v1"
+        schema_version: "v1"
+        topic: "payments.outcome.events.v1"
+      - source_service: ""
+        event_type: "merchant.books.normalized.v1"
+        event_version: ""
+        schema_version: ""
+        topic: "payments.outcome.events.v1"
+      - source_service: ""
+        event_type: "import.completed.v1"
+        event_version: "v1"
+        schema_version: "v1"
+        topic: "payments.outcome.events.v1"
+      - source_service: ""
+        event_type: "import.completed.v1"
+        event_version: ""
+        schema_version: ""
+        topic: "payments.outcome.events.v1"
+      - source_service: ""
+        event_type: "vector.index.requested"
+        event_version: "v1"
+        schema_version: "v1"
+        topic: "zord.vector.index.request.v1"
+      - source_service: ""
+        event_type: "vector.index.requested"
+        event_version: ""
+        schema_version: ""
+        topic: "zord.vector.index.request.v1"
+
+tracing:
+  enabled: false
+  otlp_endpoint: ""
+  service_name: relay-service
+  environment: test
+
+metrics:
+  enabled: true
+  addr: ":8082"   # /health, /ready, /metrics and the operator API
+
+db:
+  url: "${RELAY_DB_URL}"
+  max_open_conns: 20
+  max_idle_conns: 5
+
+# Relay still builds psp.NewDemoClient (no HTTP call) regardless of this URL
+# until Go lands the HTTP PSP client (spec §6 R-PSP).
+psp:
+  base_url: "http://fake-psp:8099"
+  timeout_seconds: 5
+
+# Interim: fake-psp serves /health + /v1/detokenize because relay sends no
+# service JWT to the real vault (spec §6 R-DETOK).
+token_enclave:
+  base_url: "http://fake-psp:8099"
+  timeout_seconds: 10
+
+dispatch:
+  enabled: false
+  consumer_group_id: "dispatch-loop-group"
+  topic: "payments.intent.events.v1"
+  poll_timeout: 200ms
+  connector_id: "razorpayx-v1"
+  default_corridor_id: "IMPS"
+  router_url: "http://router:8091"
+  worker_count: 4
+  psp_circuit_breaker_threshold: 5
+  psp_circuit_reset_seconds: 60
+
+relay_loop:
+  worker_count: 2
+  batch_size: 50
+  poll_interval: 2s
+  dispatch_events_topic: "payments.dispatch.events.v1"
+  publish_failure_dlq_topic: "relay.dlq.publish_failure"
+  poison_event_dlq_topic: "relay.dlq.poison"
+
+retry_sweeper:
+  interval: 30s
+  batch_size: 20
+
+recovery_sweeper:
+  interval: 60s
+  sent_timeout_seconds: 20      # > psp.timeout_seconds
+  awaiting_timeout_seconds: 300
+  batch_size: 50

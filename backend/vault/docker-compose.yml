@@ -9,7 +9,8 @@ services:
     ports:
       - "8087:8087"
     env_file:
-      - ./.env
+      - path: ./.env
+        required: false
     environment:
       # App
       - PORT=8087
@@ -19,15 +20,15 @@ services:
 
       - DB_PORT=5432
       - DB_USER=token_user
-      - DB_PASSWORD=token_password
+      - DB_PASSWORD=${VAULT_POSTGRES_PASSWORD:?set VAULT_POSTGRES_PASSWORD (see backend/vault/.env.example)}
       - DB_NAME=zord_token_enclave_db
       - DB_SSLMODE=disable
-      - DB_URL=postgres://token_user:token_password@zord-token-postgres:5432/zord_token_enclave?sslmode=disable
+      - DB_URL=postgres://token_user:${VAULT_POSTGRES_PASSWORD:?set VAULT_POSTGRES_PASSWORD}@zord-token-postgres:5432/zord_token_enclave?sslmode=disable
 
 
       # Crypto
       # TOK-03: MASTER_KEY replaced with KMS_KEY_ID (see .env for details).
-      - KMS_KEY_ID=arn:aws:kms:ap-south-1:522189039032:key/99851fd6-8fd2-45eb-9817-8d1fbca90a5f
+      - KMS_KEY_ID=${KMS_KEY_ID:?set KMS_KEY_ID}
       # Default: real AWS keys pasted into .env (AWS_ACCESS_KEY_ID/
       # AWS_SECRET_ACCESS_KEY there). Works out of the box, but every
       # teammate ends up with a real key sitting in a local file.
@@ -46,7 +47,7 @@ services:
       # - AWS_PROFILE=${AWS_PROFILE:-default}
       # TOK-04: replaces ENCLAVE_INTERNAL_TOKEN. Must match
       # SERVICE_JWT_SIGNING_SECRET in zord-intent-engine's own .env.
-      - SERVICE_JWT_SIGNING_SECRET=${SERVICE_JWT_SIGNING_SECRET}
+      - SERVICE_JWT_SIGNING_SECRET=${SERVICE_JWT_SIGNING_SECRET:?set SERVICE_JWT_SIGNING_SECRET}
 
        # -------- KAFKA --------
      # -------- KAFKA --------
@@ -76,7 +77,7 @@ services:
     command: postgres -c 'max_connections=100'
     environment:
       - POSTGRES_USER=token_user
-      - POSTGRES_PASSWORD=token_password
+      - POSTGRES_PASSWORD=${VAULT_POSTGRES_PASSWORD:?set VAULT_POSTGRES_PASSWORD}
       - POSTGRES_DB=zord_token_enclave_db
     volumes:
       - postgres_token_enclave_data:/var/lib/postgresql/data

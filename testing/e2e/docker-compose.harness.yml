@@ -1,0 +1,492 @@
+# Clearline B12 E2E harness (spec: b12-harness-spec.md §1-§4).
+#
+#   testing/e2e/gen-env.sh
+#   docker compose -f testing/e2e/docker-compose.harness.yml \
+#     --env-file testing/e2e/.env.harness up -d --build --wait
+#
+# TEST-ONLY. All secrets come from the untracked .env.harness generated per
+# run. No live PSP keys anywhere; preflight refuses to start otherwise.
+# Host ports bind to 127.0.0.1 in the 15xxx/18xxx range (see README).
+name: clearline-e2e
+
+x-go-common: &go-common
+  restart: "no"
+  networks: [clearline-e2e]
+
+x-aws-env: &aws-env
+  AWS_REGION: ap-south-1
+  AWS_DEFAULT_REGION: ap-south-1
+  AWS_ACCESS_KEY_ID: test
+  AWS_SECRET_ACCESS_KEY: test
+  AWS_EC2_METADATA_DISABLED: "true"
+  AWS_ENDPOINT_URL: http://localstack:4566
+
+# S3 for edge/intents/recon. s3.localhost.localstack.cloud and
+# <bucket>.s3.localhost.localstack.cloud are network aliases of the
+# localstack service, so virtual-host addressing also resolves if the
+# backend S3_FORCE_PATH_STYLE change is not deployed yet.
+x-s3-env: &s3-env
+  AWS_ENDPOINT_URL_S3: http://s3.localhost.localstack.cloud:4566
+  S3_FORCE_PATH_STYLE: "true"
+
+# Shared between preflight (which enforces the policy) and relay (which
+# uses it), so both always see identical values.
+x-relay-dispatch-env: &relay-dispatch-env
+  RELAY_DISPATCH_ENABLED: ${RELAY_DISPATCH_ENABLED:-false}
+  CLEARLINE_HARNESS: "1"
+  RELAY_PSP_BASE_URL: http://fake-psp:8099
+
+x-healthy-deps: &preflight-dep
+  preflight:
+    condition: service_completed_successfully
+
+services:
+  # ── 0. preflight ───────────────────────────────────────────────────────────
+  preflight:
+    image: alpine:3.19
+    restart: "no"
+    networks: [clearline-e2e]
+    entrypoint: ["/bin/sh", "/harness/preflight.sh"]
+    volumes:
+      - ./preflight.sh:/harness/preflight.sh:ro
+      - ./.env.harness:/harness/.env.harness:ro
+    environment:
+      <<: *relay-dispatch-env
+      # Passed through from the host shell so a leaked export is caught.
+      RAZORPAY_ALLOW_LIVE: ${RAZORPAY_ALLOW_LIVE:-}
+      RAZORPAY_KEY_ID: ${RAZORPAY_KEY_ID:-}
+      RAZORPAY_KEY_SECRET: ${RAZORPAY_KEY_SECRET:-}
+      RAZORPAY_LIVE_KEY_ID: ${RAZORPAY_LIVE_KEY_ID:-}
+      RAZORPAY_LIVE_KEY_SECRET: ${RAZORPAY_LIVE_KEY_SECRET:-}
+      RAZORPAY_E2E: ${RAZORPAY_E2E:-}
+
+  # ── 1. infrastructure ──────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    command: postgres -c max_connections=300
+    networks: [clearline-e2e]
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-clearline}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?run testing/e2e/gen-env.sh}
+      POSTGRES_DB: postgres
+    ports:
+      - "127.0.0.1:${E2E_POSTGRES_PORT:-15432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d postgres"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    depends_on: *preflight-dep
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    networks: [clearline-e2e]
+    environment:
+      CLUSTER_ID: Y2xlYXJsaW5lLWUyZS0x
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_NUM_PARTITIONS: 3
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 1
+      KAFKA_MIN_INSYNC_REPLICAS: 1
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
+      KAFKA_HEAP_OPTS: -Xmx512m -Xms256m
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:9092 --list >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+      start_period: 10s
+    depends_on: *preflight-dep
+
+  localstack:
+    # Pinned: newer LocalStack images may require an auth token.
+    image: localstack/localstack:3.8
+    networks:
+      clearline-e2e:
+        aliases:
+          - s3.localhost.localstack.cloud
+          - zord-edge-ingress.s3.localhost.localstack.cloud
+          - zord-intent-engine-canonical.s3.localhost.localstack.cloud
+          - zord-intent-engine-nir.s3.localhost.localstack.cloud
+          - zord-intent-engine-governance.s3.localhost.localstack.cloud
+          - zord-outcome-engine-settlement-ingress.s3.localhost.localstack.cloud
+          - zord-edge-ingress.localstack
+          - zord-intent-engine-canonical.localstack
+          - zord-intent-engine-nir.localstack
+          - zord-intent-engine-governance.localstack
+          - zord-outcome-engine-settlement-ingress.localstack
+    environment:
+      SERVICES: s3,kms
+      AWS_DEFAULT_REGION: ap-south-1
+      EAGER_SERVICE_LOADING: "1"
+      E2E_KMS_ALIAS: alias/clearline-e2e
+    volumes:
+      - ./localstack/init-aws.sh:/etc/localstack/init/ready.d/init-aws.sh:ro
+    healthcheck:
+      # Healthy only after the ready.d hook created buckets + KMS alias.
+      test: ["CMD-SHELL", "test -f /tmp/clearline-e2e-init-done && curl -sf http://localhost:4566/_localstack/health >/dev/null"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+      start_period: 10s
+    depends_on: *preflight-dep
+
+  redis:
+    image: redis:7.2-alpine
+    networks: [clearline-e2e]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    depends_on: *preflight-dep
+
+  # ── 2. one-shot init ───────────────────────────────────────────────────────
+  pg-init:
+    image: postgres:16-alpine
+    restart: "no"
+    networks: [clearline-e2e]
+    entrypoint: ["/bin/sh", "/init/pg-init.sh"]
+    environment:
+      PGHOST: postgres
+      POSTGRES_USER: ${POSTGRES_USER:-clearline}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?run testing/e2e/gen-env.sh}
+    volumes:
+      - ./pg-init.sh:/init/pg-init.sh:ro
+      - ../../backend/relay/db/init.sql:/init/relay-init.sql:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  kafka-init:
+    image: confluentinc/cp-kafka:7.6.0
+    restart: "no"
+    networks: [clearline-e2e]
+    entrypoint: ["/bin/bash", "/init/kafka-init.sh"]
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+      KAFKA_TOPIC_PARTITIONS: "3"
+    volumes:
+      - ./kafka-init.sh:/init/kafka-init.sh:ro
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  # ── 3. router, vault ───────────────────────────────────────────────────────
+  router:
+    <<: *go-common
+    build:
+      context: ../../backend/router
+      dockerfile: Dockerfile
+    image: clearline-e2e/router:local
+    environment:
+      PORT: "8091"
+      DATABASE_URL: postgres://${POSTGRES_USER:-clearline}:${POSTGRES_PASSWORD}@postgres:5432/zord_router?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+      RUST_LOG: info
+      ROUTER_AUTH_TOKEN: ${ROUTER_AUTH_TOKEN:?run testing/e2e/gen-env.sh}
+      JWT_SIGNING_SECRET: ${JWT_SIGNING_SECRET:?run testing/e2e/gen-env.sh}
+      JWT_ISSUER: ${JWT_ISSUER:-zord-edge}
+      JWT_AUDIENCE: ${JWT_AUDIENCE:-zord-console}
+    ports:
+      - "127.0.0.1:${E2E_ROUTER_PORT:-18091}:8091"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8091/v1/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+    depends_on:
+      <<: *preflight-dep
+      pg-init: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+
+  vault:
+    <<: *go-common
+    build:
+      context: ../../backend/vault
+      dockerfile: Dockerfile
+    image: clearline-e2e/vault:local
+    environment:
+      <<: *aws-env
+      PORT: "8087"
+      ENVIRONMENT: test
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: ${POSTGRES_USER:-clearline}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_NAME: zord_token_enclave_db
+      DB_SSLMODE: disable
+      KMS_KEY_ID: alias/clearline-e2e
+      TOKEN_SECRET: ${TOKEN_SECRET:?run testing/e2e/gen-env.sh}
+      SERVICE_JWT_SIGNING_SECRET: ${SERVICE_JWT_SIGNING_SECRET:?run testing/e2e/gen-env.sh}
+      KAFKA_BROKERS: kafka:9092
+      KAFKA_TOPIC_PII_TOKENIZE_REQUEST: pii.tokenize.request
+      KAFKA_TOPIC_PII_TOKENIZE_RESULT: pii.tokenize.result
+      KAFKA_TOPIC_PII_TOKENIZE_REQUEST_DLQ: pii.tokenize.request.dlq
+    healthcheck:
+      # /ready checks KMS (DescribeKey) against LocalStack.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8087/ready"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+    depends_on:
+      <<: *preflight-dep
+      pg-init: {condition: service_completed_successfully}
+      kafka-init: {condition: service_completed_successfully}
+      localstack: {condition: service_healthy}
+
+  # ── 4. edge, intents, recon ────────────────────────────────────────────────
+  edge:
+    <<: *go-common
+    build:
+      context: ../../backend/edge
+      dockerfile: Dockerfile
+    image: clearline-e2e/edge:local
+    environment:
+      <<: [*aws-env, *s3-env]
+      ENVIRONMENT: test
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: ${POSTGRES_USER:-clearline}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_NAME: zord_edge_db
+      DB_SSLMODE: disable
+      JWT_SIGNING_SECRET: ${JWT_SIGNING_SECRET}
+      JWT_ISSUER: ${JWT_ISSUER:-zord-edge}
+      JWT_AUDIENCE: ${JWT_AUDIENCE:-zord-console}
+      INTERNAL_ADMIN_KEY: ${INTERNAL_ADMIN_KEY:?run testing/e2e/gen-env.sh}
+      RELAY_AUTH_TOKEN: ${RELAY_AUTH_TOKEN:?run testing/e2e/gen-env.sh}
+      ZORD_VAULT_KEY: ${ZORD_VAULT_KEY:?run testing/e2e/gen-env.sh}
+      CLEARLINE_SECRETS_KEY: ${CLEARLINE_SECRETS_KEY:?run testing/e2e/gen-env.sh}
+      S3_BUCKET: zord-edge-ingress
+      SIGNING_KEY_PATH: /run/secrets/ed25519_private.pem
+      VAULT_KEY_ID: e2e-key
+      OBJECT_STORE_VERSION: v1
+    volumes:
+      - ./secrets/ed25519_private.pem:/run/secrets/ed25519_private.pem:ro
+    ports:
+      - "127.0.0.1:${E2E_EDGE_PORT:-18080}:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/ready"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 15s
+    depends_on:
+      <<: *preflight-dep
+      pg-init: {condition: service_completed_successfully}
+      kafka-init: {condition: service_completed_successfully}
+      localstack: {condition: service_healthy}
+      router: {condition: service_healthy}
+      vault: {condition: service_healthy}
+
+  intents:
+    <<: *go-common
+    build:
+      context: ../../backend/intents
+      dockerfile: Dockerfile
+    image: clearline-e2e/intents:local
+    environment:
+      <<: [*aws-env, *s3-env]
+      ENVIRONMENT: test
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: ${POSTGRES_USER:-clearline}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_NAME: zord_intent_engine_db
+      DB_SSLMODE: disable
+      KAFKA_BROKERS: kafka:9092
+      KAFKA_TOPIC: payments.ledger.events.v1
+      KAFKA_TOPIC_PII_TOKENIZE_REQUEST: pii.tokenize.request
+      KAFKA_TOPIC_PII_TOKENIZE_RESULT: pii.tokenize.result
+      ZORD_PII_ENCLAVE_URL: http://vault:8087
+      SERVICE_JWT_SIGNING_SECRET: ${SERVICE_JWT_SIGNING_SECRET}
+      JWT_SIGNING_SECRET: ${JWT_SIGNING_SECRET}
+      JWT_ISSUER: ${JWT_ISSUER:-zord-edge}
+      ZORD_VAULT_KEY: ${ZORD_VAULT_KEY}
+      PII_TOKEN_SECRET: ${PII_TOKEN_SECRET:?run testing/e2e/gen-env.sh}
+      TOKENIZED_DATA_HASH_MASTER_SECRET: ${TOKENIZED_DATA_HASH_MASTER_SECRET:?run testing/e2e/gen-env.sh}
+      INTENT_ENGINE_INTERNAL_SERVICE_TOKEN: ${INTENT_ENGINE_INTERNAL_SERVICE_TOKEN:-}
+      RELAY_AUTH_TOKEN: ${RELAY_AUTH_TOKEN}
+      CANNONICALS3_BUCKET: zord-intent-engine-canonical
+      NIRS3_BUCKET: zord-intent-engine-nir
+      GOVERNANCES3_BUCKET: zord-intent-engine-governance
+    ports:
+      - "127.0.0.1:${E2E_INTENTS_PORT:-18083}:8083"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8083/ready"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 15s
+    depends_on:
+      <<: *preflight-dep
+      pg-init: {condition: service_completed_successfully}
+      kafka-init: {condition: service_completed_successfully}
+      localstack: {condition: service_healthy}
+      router: {condition: service_healthy}
+      vault: {condition: service_healthy}
+
+  recon:
+    <<: *go-common
+    build:
+      context: ../../backend/recon
+      dockerfile: Dockerfile
+    image: clearline-e2e/recon:local
+    # NOTE: RAZORPAY_KEY_ID/SECRET, RAZORPAY_LIVE_*, RAZORPAY_ALLOW_LIVE and
+    # RAZORPAY_E2E must never be added here (preflight + README).
+    environment:
+      <<: [*aws-env, *s3-env]
+      ENVIRONMENT: test
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: ${POSTGRES_USER:-clearline}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_NAME: zord_outcome_db
+      DB_SSLMODE: disable
+      KAFKA_BROKERS: kafka:9092
+      KAFKA_TOPIC: payments.dispatch.events.v1
+      KAFKA_INTENT_TOPIC: payments.intent.events.v1
+      KAFKA_OBSERVATION_TOPIC: payments.ledger.events.v1
+      KAFKA_BANK_TOPIC: payments.bank.events.v1
+      JWT_SIGNING_SECRET: ${JWT_SIGNING_SECRET}
+      JWT_ISSUER: ${JWT_ISSUER:-zord-edge}
+      RELAY_AUTH_TOKEN: ${RELAY_AUTH_TOKEN}
+      ZORD_VAULT_KEY: ${ZORD_VAULT_KEY}
+      ZORD_EDGE_URL: http://edge:8080
+      S3_BUCKET: zord-outcome-engine-settlement-ingress
+      RAZORPAY_MODE: test
+    ports:
+      - "127.0.0.1:${E2E_RECON_PORT:-18081}:8081"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8081/ready"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+      start_period: 20s
+    depends_on:
+      <<: *preflight-dep
+      pg-init: {condition: service_completed_successfully}
+      kafka-init: {condition: service_completed_successfully}
+      localstack: {condition: service_healthy}
+      router: {condition: service_healthy}
+      vault: {condition: service_healthy}
+
+  # ── 5. fake PSP (+ interim token-enclave stub) ─────────────────────────────
+  fake-psp:
+    <<: *go-common
+    build:
+      context: ./fake-psp
+      dockerfile: Dockerfile
+    image: clearline-e2e/fake-psp:local
+    environment:
+      FAKE_PSP_PORT: "8099"
+      FAKE_PSP_EDGE_URL: http://edge:8080
+      FAKE_PSP_AUTO_WEBHOOK_MS: ${FAKE_PSP_AUTO_WEBHOOK_MS:-500}
+      RELAY_PSP_TIMEOUT_SECONDS: "5"
+    ports:
+      - "127.0.0.1:${E2E_FAKE_PSP_PORT:-18099}:8099"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8099/health"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    depends_on:
+      <<: *preflight-dep
+      edge: {condition: service_healthy}
+      intents: {condition: service_healthy}
+      recon: {condition: service_healthy}
+
+  # ── 5b. harness-setup (one-shot): tenants, connector, webhook secret ──────
+  harness-setup:
+    image: alpine:3.19
+    restart: "no"
+    networks: [clearline-e2e]
+    entrypoint: ["/bin/sh", "/harness/harness-setup.sh"]
+    environment:
+      EDGE_URL: http://edge:8080
+      FAKE_PSP_URL: http://fake-psp:8099
+      HARNESS_RUNTIME_FILE: /out/.env.harness.runtime
+      E2E_USER_PASSWORD: ${E2E_USER_PASSWORD:?run testing/e2e/gen-env.sh}
+      HARNESS_CONNECTOR_MAP_FORMAT: ${HARNESS_CONNECTOR_MAP_FORMAT:-json}
+      HARNESS_CONNECTOR_MAP_KEY: ${HARNESS_CONNECTOR_MAP_KEY:-}
+    volumes:
+      - ./harness-setup.sh:/harness/harness-setup.sh:ro
+      # Writes testing/e2e/.env.harness.runtime (gitignored).
+      - ./:/out
+    depends_on:
+      <<: *preflight-dep
+      edge: {condition: service_healthy}
+      intents: {condition: service_healthy}
+      recon: {condition: service_healthy}
+      fake-psp: {condition: service_healthy}
+
+  # ── 6. relay (last) ────────────────────────────────────────────────────────
+  relay:
+    <<: *go-common
+    build:
+      context: ../../backend/relay
+      dockerfile: Dockerfile
+    image: clearline-e2e/relay:local
+    # Wrapper: export the harness-setup output (connector map etc.), then exec
+    # the real binary. The directory (not the file) is mounted so the path
+    # exists at container-create time.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - 'set -a; . /harness/.env.harness.runtime; set +a; exec /app/relay'
+    environment:
+      <<: *relay-dispatch-env
+      RELAY_CONFIG_FILE: /etc/relay/harness.yaml
+      ENVIRONMENT: test
+      RELAY_DB_URL: postgres://${POSTGRES_USER:-clearline}:${POSTGRES_PASSWORD}@postgres:5432/zord_relay_db?sslmode=disable
+      RELAY_KAFKA_BROKERS: kafka:9092
+      RELAY_AUTH_TOKEN: ${RELAY_AUTH_TOKEN}
+      RELAY_OPERATOR_AUTH_TOKEN: ${RELAY_OPERATOR_AUTH_TOKEN:?run testing/e2e/gen-env.sh}
+      # Interim token enclave = fake-psp (spec §6 R-DETOK).
+      RELAY_TOKEN_ENCLAVE_BASE_URL: ${RELAY_TOKEN_ENCLAVE_BASE_URL:-http://fake-psp:8099}
+      RELAY_PSP_TIMEOUT_SECONDS: "5"
+      RELAY_DISPATCH_ROUTER_URL: http://router:8091
+      ROUTER_URL: http://router:8091
+      ROUTER_AUTH_TOKEN: ${ROUTER_AUTH_TOKEN}
+      RELAY_METRICS_ENABLED: "true"
+      RELAY_METRICS_ADDR: ":8082"
+      RELAY_TRACING_ENABLED: "false"
+    volumes:
+      - ./relay.harness.yaml:/etc/relay/harness.yaml:ro
+      - ./:/harness:ro
+    ports:
+      - "127.0.0.1:${E2E_RELAY_PORT:-18082}:8082"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8082/ready"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+    depends_on:
+      <<: *preflight-dep
+      pg-init: {condition: service_completed_successfully}
+      kafka-init: {condition: service_completed_successfully}
+      router: {condition: service_healthy}
+      edge: {condition: service_healthy}
+      intents: {condition: service_healthy}
+      recon: {condition: service_healthy}
+      fake-psp: {condition: service_healthy}
+      harness-setup: {condition: service_completed_successfully}
+
+networks:
+  clearline-e2e:
+    name: clearline-e2e

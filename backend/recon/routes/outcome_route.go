@@ -138,6 +138,7 @@ func BackfillRoutes(router *gin.Engine, h *handlers.BackfillHandler) {
 	{
 		internal.POST("/backfill/payments", h.CreatePayments)
 		internal.POST("/backfill/settlements", h.CreateSettlements)
+		internal.POST("/backfill/payouts", h.CreatePayouts)
 		internal.GET("/backfill/jobs/:job_id", h.GetJob)
 		internal.POST("/backfill/jobs/:job_id/resume", h.ResumeJob)
 		internal.POST("/backfill/jobs/:job_id/cancel", h.CancelJob)

@@ -3,8 +3,11 @@ package handler
 import (
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
+	"zord-edge/internal/secretbox"
+	"zord-edge/middleware"
 	"zord-edge/model"
 	"zord-edge/services"
 
@@ -14,6 +17,16 @@ import (
 // ConnectorHandler holds dependencies for connector API endpoints.
 type ConnectorHandler struct {
 	connectorSvc *services.ConnectorService
+	// setWebhookSecret is a test hook; nil uses connectorSvc.SetWebhookSecret.
+	setWebhookSecret SetWebhookSecretFunc
+	// audit records webhook-secret sets; nil uses services.AuditConnectorEvent.
+	audit services.ConnectorAuditFunc
+}
+
+// NewConnectorHandlerWithSecretWriter builds a handler whose webhook-secret
+// writes go through set (tests; production uses NewConnectorHandler).
+func NewConnectorHandlerWithSecretWriter(set SetWebhookSecretFunc) *ConnectorHandler {
+	return &ConnectorHandler{connectorSvc: services.NewConnectorService(), setWebhookSecret: set}
 }
 
 // NewConnectorHandler creates a new ConnectorHandler.
@@ -30,6 +43,10 @@ func RegisterConnectorRoutes(rg *gin.RouterGroup, h *ConnectorHandler) {
 	rg.POST("/connectors/razorpay/test", h.TestConnector)
 	rg.GET("/connectors/razorpay/status", h.GetStatus)
 	rg.GET("/connectors", h.ListConnectors)
+	// Tenant admin only; tenant_id from the auth context (D32 per-tenant secret).
+	rg.PUT("/connectors/:connectorID/webhook-secret",
+		middleware.RequireRole(WebhookSecretAdminRoles...),
+		h.SetWebhookSecret)
 }
 
 // HealthResult is the safe output of a connection test (no secrets).
@@ -69,9 +86,23 @@ func (h *ConnectorHandler) CreateConnector(c *gin.Context) {
 		return
 	}
 
-	// For local dev, store env-var references. Production uses vault refs.
-	keyIDRef := "env:RAZORPAY_KEY_ID"
-	keySecretRef := "env:RAZORPAY_KEY_SECRET"
+	// D32: store THIS tenant's credentials, never a reference to the shared
+	// process-wide RAZORPAY_KEY_* env (that was a cross-tenant fallback).
+	// The key id is not secret; the key secret is sealed with secretbox
+	// (enc:v1:, CLEARLINE_SECRETS_KEY). A missing key fails closed.
+	keyIDRef := strings.TrimSpace(req.KeyID)
+	keySecretRef, err := secretbox.Encrypt(strings.TrimSpace(req.KeySecret))
+	if err != nil {
+		slog.Error("failed to seal connector key secret",
+			slog.String("error", err.Error()),
+			slog.String("provider", "razorpay"),
+		)
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"error":   "secret_storage_unavailable",
+			"message": "connector secrets cannot be stored right now",
+		})
+		return
+	}
 
 	conn, err := h.connectorSvc.CreateConnector(
 		tenantID,

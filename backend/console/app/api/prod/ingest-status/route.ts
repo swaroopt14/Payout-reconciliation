@@ -1,5 +1,12 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { NextRequest } from 'next/server'
 import { BACKEND_SERVICES } from '@/config/api.endpoints'
+import { resolveIntelligenceSource } from '@/services/settlementSourceFlag'
+import {
+  labelSettlementResponse,
+  resolveSettlementSource,
+  settlementJson,
+  type SettlementSource,
+} from '@/services/settlementSource.server'
 import {
   applyRefreshedSessionCookies,
   requireSessionTenantForProdProxy,
@@ -30,12 +37,22 @@ async function probeJson<T>(url: string, tenantId: string): Promise<T | null> {
 }
 
 export async function GET(request: NextRequest) {
+  const resolved = resolveSettlementSource()
+  if (!resolved.ok) return resolved.response
+  const settlementSource = resolved.source
+  // Label the whole composite response demo if ANY probed source is the simulator.
+  const intel = resolveIntelligenceSource()
+  const labelSource: SettlementSource =
+    settlementSource.kind === 'simulator' || intel.kind === 'simulator'
+      ? { kind: 'simulator', baseUrl: settlementSource.baseUrl }
+      : settlementSource
+
   const gate = await requireSessionTenantForProdProxy(request)
-  if (!gate.ok) return gate.response
+  if (!gate.ok) return labelSettlementResponse(gate.response, labelSource)
   const tenantId = gate.tenantId
 
   const intentBase = BACKEND_SERVICES.INTENT_ENGINE.BASE_URL
-  const intelBase = BACKEND_SERVICES.INTELLIGENCE.BASE_URL
+  const intelBase = intel.baseUrl
   const evidenceBase = BACKEND_SERVICES.EVIDENCE.BASE_URL
 
   const [intentProbe, settlement, evidencePacks, defensibility, patterns] = await Promise.all([
@@ -44,7 +61,7 @@ export async function GET(request: NextRequest) {
       tenantId,
     ),
     probeJson<{ items?: unknown[]; observations?: unknown[] }>(
-      `${(process.env.ZORD_SETTLEMENT_URL || process.env.SMOKE_SIMULATOR_URL || 'http://localhost:8081').replace(/\/$/, '')}/v1/settlement/observations/batches?tenant_id=${encodeURIComponent(tenantId)}`,
+      `${settlementSource.baseUrl}/v1/settlement/observations/batches?tenant_id=${encodeURIComponent(tenantId)}`,
       tenantId,
     ),
     probeJson<{ packs?: unknown[] }>(
@@ -97,7 +114,9 @@ export async function GET(request: NextRequest) {
     },
   ]
 
-  const res = NextResponse.json({ tenant_id: tenantId, sources })
+  const res = settlementJson({ tenant_id: tenantId, sources }, labelSource, {
+    headers: { 'cache-control': 'no-store' },
+  })
   applyRefreshedSessionCookies(res, gate.refreshedPayload)
   return res
 }

@@ -4,7 +4,7 @@ services:
     container_name: zord-router-postgres
     environment:
       POSTGRES_USER: router
-      POSTGRES_PASSWORD: router
+      POSTGRES_PASSWORD: ${ROUTER_POSTGRES_PASSWORD:?set ROUTER_POSTGRES_PASSWORD (see backend/router/.env.example)}
       POSTGRES_DB: zord_router
     ports:
       - "5434:5432"
@@ -43,13 +43,16 @@ services:
       - "8091:8091"
     environment:
       - PORT=8091
-      - DATABASE_URL=postgres://router:router@postgres:5432/zord_router
+      - DATABASE_URL=postgres://router:${ROUTER_POSTGRES_PASSWORD:?set ROUTER_POSTGRES_PASSWORD}@postgres:5432/zord_router
       - REDIS_URL=redis://redis:6379/0
       - RUST_LOG=info
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       - JWT_SIGNING_SECRET=${JWT_SIGNING_SECRET:-}
       - JWT_ISSUER=${JWT_ISSUER:-zord-edge}
-      - ROUTER_AUTH_TOKEN=${ROUTER_AUTH_TOKEN:-}
+      # Required: relay/console call the router with X-Router-Token; unset => every payout holds (D28).
+      - ROUTER_AUTH_TOKEN=${ROUTER_AUTH_TOKEN:?set ROUTER_AUTH_TOKEN}
+      # Must equal the aud edge mints (JWT_AUDIENCE, default zord-console).
+      - JWT_AUDIENCE=${JWT_AUDIENCE:-zord-console}
     depends_on:
       postgres:
         condition: service_healthy

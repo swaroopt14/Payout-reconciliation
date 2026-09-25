@@ -45,6 +45,16 @@ func HashWebhookBody(raw []byte) string {
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
+// sqlWebhookStore is also the webhook replay-protection store (D31).
+// Razorpay's HMAC has no timestamp, so a captured, validly signed delivery
+// could be replayed. provider_webhook_receipts already holds
+// UNIQUE (tenant_id, connector_id, event_id) (migration
+// 20260914120000_tenant_scope_global_uniques), keyed on the provider event id
+// from x-razorpay-event-id. A repeat event id for the same tenant+connector
+// is acknowledged (2xx, status "duplicate"/"payload_conflict") and NOT
+// re-published to ingress_outbox. The lookup below matches that unique key
+// exactly (tenant-scoped, D11), so another tenant's same event id is its own
+// delivery and is processed.
 type sqlWebhookStore struct{}
 
 func (sqlWebhookStore) PersistWebhookObservation(ctx context.Context, in webhookPersistInput) (model.ReceiptResult, error) {
@@ -77,9 +87,9 @@ func (sqlWebhookStore) PersistWebhookObservation(ctx context.Context, in webhook
 	err = tx.QueryRowContext(ctx, `
 		SELECT id, raw_body_hash, delivery_count
 		FROM provider_webhook_receipts
-		WHERE connector_id = $1 AND event_id = $2
+		WHERE tenant_id = $1 AND connector_id = $2 AND event_id = $3
 		FOR UPDATE
-	`, in.ConnectorID, in.EventID).Scan(&existingID, &existingHash, &existingCount)
+	`, in.TenantID, in.ConnectorID, in.EventID).Scan(&existingID, &existingHash, &existingCount)
 
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
@@ -90,9 +100,9 @@ func (sqlWebhookStore) PersistWebhookObservation(ctx context.Context, in webhook
 				if selErr := tx.QueryRowContext(ctx, `
 					SELECT id, raw_body_hash, delivery_count
 					FROM provider_webhook_receipts
-					WHERE connector_id = $1 AND event_id = $2
+					WHERE tenant_id = $1 AND connector_id = $2 AND event_id = $3
 					FOR UPDATE
-				`, in.ConnectorID, in.EventID).Scan(&existingID, &existingHash, &existingCount); selErr != nil {
+				`, in.TenantID, in.ConnectorID, in.EventID).Scan(&existingID, &existingHash, &existingCount); selErr != nil {
 					return model.ReceiptResult{}, fmt.Errorf("%w: %v", ErrWebhookPersist, selErr)
 				}
 				return finishExistingReceipt(ctx, tx, existingID, existingHash, existingCount, in.BodyHash, now)
@@ -296,8 +306,9 @@ func NewMemoryWebhookStore() *MemoryWebhookStore {
 	return &MemoryWebhookStore{receipts: map[string]memoryReceipt{}}
 }
 
-func memoryKey(connectorID uuid.UUID, eventID string) string {
-	return connectorID.String() + "|" + eventID
+// memoryKey mirrors the Postgres unique key (tenant_id, connector_id, event_id).
+func memoryKey(tenantID, connectorID uuid.UUID, eventID string) string {
+	return tenantID.String() + "|" + connectorID.String() + "|" + eventID
 }
 
 func (m *MemoryWebhookStore) PersistWebhookObservation(_ context.Context, in webhookPersistInput) (model.ReceiptResult, error) {
@@ -311,7 +322,7 @@ func (m *MemoryWebhookStore) PersistWebhookObservation(_ context.Context, in web
 		m.receipts = map[string]memoryReceipt{}
 	}
 
-	key := memoryKey(in.ConnectorID, in.EventID)
+	key := memoryKey(in.TenantID, in.ConnectorID, in.EventID)
 	if existing, ok := m.receipts[key]; ok {
 		if existing.BodyHash != in.BodyHash {
 			return model.ReceiptResult{
@@ -364,8 +375,12 @@ func (m *MemoryWebhookStore) PersistWebhookObservation(_ context.Context, in web
 func (m *MemoryWebhookStore) Receipt(connectorID uuid.UUID, eventID string) (memoryReceipt, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	rec, ok := m.receipts[memoryKey(connectorID, eventID)]
-	return rec, ok
+	for _, rec := range m.receipts {
+		if rec.ConnectorID == connectorID && rec.EventID == eventID {
+			return rec, true
+		}
+	}
+	return memoryReceipt{}, false
 }
 
 func (m *MemoryWebhookStore) ReceiptCount() int {

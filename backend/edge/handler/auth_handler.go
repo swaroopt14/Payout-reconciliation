@@ -16,12 +16,15 @@ import (
 
 // RegisterPublicAuthRoutes attaches /v1/auth/* used by zord-console (signup, login,
 // refresh, logout, and Bearer /me). Call once from route setup (e.g. routes/intent_route.go).
-func RegisterPublicAuthRoutes(router *gin.Engine) {
+//
+// credentialLimits (optional) run before signup/login/refresh — the
+// unauthenticated credential endpoints — e.g. the per-IP rate limiter.
+func RegisterPublicAuthRoutes(router *gin.Engine, credentialLimits ...gin.HandlerFunc) {
 	pub := router.Group("/v1/auth")
 	{
-		pub.POST("/signup", Signup)
-		pub.POST("/login", Login)
-		pub.POST("/refresh", Refresh)
+		pub.POST("/signup", append(append([]gin.HandlerFunc{}, credentialLimits...), Signup)...)
+		pub.POST("/login", append(append([]gin.HandlerFunc{}, credentialLimits...), Login)...)
+		pub.POST("/refresh", append(append([]gin.HandlerFunc{}, credentialLimits...), Refresh)...)
 		pub.POST("/logout", Logout)
 	}
 	me := router.Group("/v1/auth")

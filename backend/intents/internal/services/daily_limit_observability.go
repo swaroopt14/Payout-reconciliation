@@ -59,6 +59,10 @@ var (
 // structured audit log line for one ReserveIfWithinLimit outcome on the main
 // ingest path. amount is this single intent's amount, not a running total.
 func recordDailyLimitReservation(ctx context.Context, tenantID, currency, businessDate, decision string, amount decimal.Decimal) {
+	// OBSERVABILITY ONLY (D10): OTel counters take float64, so this lossy
+	// conversion exists solely to emit metrics. amountF must never feed a
+	// money decision (limits, holds, matching, dispatch); those use the exact
+	// decimal / int64 paise values.
 	amountF, _ := amount.Float64()
 	attrs := metric.WithAttributes(attribute.String("currency", currency))
 

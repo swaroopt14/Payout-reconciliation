@@ -64,6 +64,11 @@ type DispatchLoop struct {
 	cfg          *DispatchLoopConfig
 	router       RailRouter
 
+	// connectorResolver maps (tenant, connector slug) to the tenant's
+	// connectors.id UUID for dispatch events. Nil fails closed: every
+	// dispatch is HELD with CONNECTOR_UNRESOLVED (D44, L7).
+	connectorResolver ConnectorResolver
+
 	// Circuit breaker — tracks consecutive PSP failures.
 	cbMu       sync.Mutex
 	cbFailures int
@@ -98,6 +103,13 @@ type RailRouter interface {
 func (l *DispatchLoop) SetRouter(r RailRouter) {
 	if l != nil {
 		l.router = r
+	}
+}
+
+// SetConnectorResolver installs the per-tenant connector UUID resolver.
+func (l *DispatchLoop) SetConnectorResolver(r ConnectorResolver) {
+	if l != nil {
+		l.connectorResolver = r
 	}
 }
 
@@ -248,13 +260,22 @@ func (l *DispatchLoop) processEvent(ctx context.Context, workerID int, e model.O
 	case "BANK":
 		corridorID = "IMPS"
 	}
-	if l.router != nil {
+	routerAmountMinor, routerAmountErr := amountMinorFromMajor(payload.Amount)
+	if l.router != nil && routerAmountErr != nil {
+		// Never route on a guessed amount. runSteps2to5 fails this dispatch
+		// terminally (AMOUNT_INVALID) before any PSP request is built.
+		log.Warn("dispatch_loop: invalid amount; rail router not consulted",
+			zap.Error(routerAmountErr),
+			zap.String("connector_id", connectorID),
+			zap.String("corridor_id", corridorID),
+		)
+	} else if l.router != nil {
 		decision, err := l.router.Route(ctx, railrouter.Request{
 			TenantID:    e.TenantID,
 			EntityID:    e.AggregateID,
 			Direction:   "OUTBOUND",
 			Rail:        corridorID,
-			AmountMinor: amountMinorFromMajor(payload.Amount),
+			AmountMinor: routerAmountMinor,
 			Currency:    "INR",
 		})
 		if err != nil {
@@ -320,6 +341,17 @@ func (l *DispatchLoop) processEvent(ctx context.Context, workerID int, e model.O
 		// First time — mint dispatch_id and take ownership.
 		dispatchID := uuid.New().String()
 
+		// DispatchCreated must carry the tenant's connectors.id UUID, never
+		// the slug and never a nil UUID (D44, L7). If it cannot be resolved
+		// the row is still written (ownership taken) but no DispatchCreated
+		// is published; runSteps2to5 then HOLDs it with CONNECTOR_UNRESOLVED
+		// before any PSP request is built.
+		connectorUUID, connErr := resolveConnectorUUID(ctx, l.connectorResolver, tenantID, connectorID)
+		if connErr != nil {
+			log.Error("dispatch_loop: step1 connector UUID unresolved — dispatch will be held",
+				zap.Error(connErr), zap.String("connector_ref", connectorID))
+		}
+
 		carriers := model.CorrelationCarriers{
 			ReferenceID: dispatchID,
 			Narration:   "ZRD:" + contractID,
@@ -352,7 +384,8 @@ func (l *DispatchLoop) processEvent(ctx context.Context, workerID int, e model.O
 			CreatedAt:     time.Now().UTC(),
 			Payload: model.DispatchCreatedPayload{
 				DispatchID:          dispatchID,
-				ConnectorID:         connectorID,
+				ConnectorID:         connectorUUID.String(),
+				ConnectorRef:        connectorID,
 				CorridorID:          corridorID,
 				AttemptCount:        1,
 				CorrelationCarriers: carriers,
@@ -362,6 +395,9 @@ func (l *DispatchLoop) processEvent(ctx context.Context, workerID int, e model.O
 		if err := l.atomicStep(ctx, func(tx *sql.Tx) error {
 			if err := l.dispatchRepo.InsertTx(ctx, tx, newDispatch, e.Payload); err != nil {
 				return err
+			}
+			if connErr != nil {
+				return nil // never publish a DispatchCreated without a connector UUID
 			}
 			return l.outboxRepo.EnqueueTx(ctx, tx,
 				dcEvent.EventID, "DispatchCreated",
@@ -414,6 +450,13 @@ func (l *DispatchLoop) runSteps2to5(ctx context.Context, workerID int, d *model.
 	// Check connector health, circuit breaker, execution window.
 	// =========================================================
 	decision, reasonCodes := l.evaluateGovernance(ctx, dispatchID, connectorID, payload)
+	connectorUUID, connErr := resolveConnectorUUID(ctx, l.connectorResolver, tenantID, connectorID)
+	if decision == model.GovernanceAllow && connErr != nil {
+		// Fail closed (D44): no connector UUID → HOLD, no PSP request.
+		log.Error("dispatch_loop: step1.5 connector UUID unresolved — holding dispatch", zap.Error(connErr))
+		decision = model.GovernanceHold
+		reasonCodes = append(reasonCodes, ReasonConnectorUnresolved)
+	}
 
 	govEvent := model.DispatchGovernanceEvaluatedEvent{
 		EventID:       uuid.New().String(),
@@ -455,6 +498,20 @@ func (l *DispatchLoop) runSteps2to5(ctx context.Context, workerID int, d *model.
 	}
 
 	log.Info("dispatch_loop: step1.5 governance ALLOW_DISPATCH")
+
+	// Exact rupee→paise conversion (D10). An amount that cannot be converted
+	// exactly must never reach the PSP: fail terminally before detokenizing,
+	// before AttemptSent, and before any PayoutRequest is built.
+	amountMinor, amountErr := amountMinorFromDecimalString(payload.Amount)
+	if amountErr == nil && amountMinor <= 0 {
+		amountErr = fmt.Errorf("amount must be greater than zero: %q", payload.Amount)
+	}
+	if amountErr != nil {
+		log.Error("dispatch_loop: invalid payout amount — PSP request not sent", zap.Error(amountErr))
+		l.markFailedTerminal(ctx, dispatchID, contractID, intentID, tenantID, traceID,
+			"AMOUNT_INVALID: "+amountErr.Error(), log)
+		return
+	}
 
 	// =========================================================
 	// STEP 2: Detokenize JIT — Service 3
@@ -506,7 +563,8 @@ func (l *DispatchLoop) runSteps2to5(ctx context.Context, workerID int, d *model.
 		CreatedAt:     asSentAt,
 		Payload: model.AttemptSentPayload{
 			DispatchID:   dispatchID,
-			ConnectorID:  connectorID,
+			ConnectorID:  connectorUUID.String(),
+			ConnectorRef: connectorID,
 			CorridorID:   corridorID,
 			AttemptCount: d.AttemptCount,
 			SentAt:       asSentAt,
@@ -543,7 +601,7 @@ func (l *DispatchLoop) runSteps2to5(ctx context.Context, workerID int, d *model.
 	pspReq := psp.PayoutRequest{
 		ReferenceID: dispatchID,
 		Narration:   "ZRD:" + contractID,
-		Amount:      amountFromString(payload.Amount),
+		Amount:      amountMinor, // paise, exact (amountMinorFromDecimalString)
 		Mode:        corridorID,
 		Beneficiary: psp.Beneficiary{
 			Name:          rb.Name,
@@ -884,28 +942,12 @@ func buildRequestFingerprint(dispatchID, amount, corridor string) string {
 	return fmt.Sprintf("%x", h)
 }
 
-// amountFromString converts a decimal string amount (e.g. "100.50") to int64.
-// Amount is expected in major currency units; conversion to minor units (paise)
-// is the PSP connector's responsibility. For the demo client this is fine as-is.
-func amountFromString(amount string) int64 {
-	if amount == "" {
-		return 0
-	}
-	var f float64
-	fmt.Sscanf(amount, "%f", &f)
-	return int64(f)
-}
-
-func amountMinorFromMajor(amount string) int64 {
-	if amount == "" {
-		return 0
-	}
-	var f float64
-	fmt.Sscanf(amount, "%f", &f)
-	if f < 0 {
-		return 0
-	}
-	return int64(f*100 + 0.5)
+// amountMinorFromMajor converts the payload's major-unit amount to paise for
+// the rail router. It routes through the same exact parser as the PSP request
+// (amountMinorFromDecimalString) so the router and the PSP always see the same
+// paise value. No float64.
+func amountMinorFromMajor(amount string) (int64, error) {
+	return amountMinorFromDecimalString(amount)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

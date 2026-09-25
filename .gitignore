@@ -375,3 +375,6 @@ marimo/_lsp/
 $null
 **/nul
 **/NUL
+
+# Committed env templates (placeholders only; real values live in .env, D32)
+!**/.env.example

@@ -1,2 +1,4 @@
 apache-airflow-providers-http
 apache-airflow-providers-standard
+# Signal scheduler Kafka intake (plugins/signals/kafka_intake.py); imported lazily.
+confluent-kafka>=2.3,<3

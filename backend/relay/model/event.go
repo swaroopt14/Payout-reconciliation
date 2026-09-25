@@ -220,13 +220,13 @@ type DLQItemEvent struct {
 	SchemaVersion string `json:"schema_version,omitempty"`
 	SourceService string `json:"source_service,omitempty"`
 
-	LeaseID        string          `json:"lease_id,omitempty"`
-	LeasedBy       string          `json:"leased_by,omitempty"`
-	LeaseUntil     *time.Time      `json:"lease_until,omitempty"`
-	RetryCount     int             `json:"retry_count"`
-	NextAttemptAt  *time.Time      `json:"next_attempt_at,omitempty"`
-	DispatchedAt   *time.Time      `json:"dispatched_at,omitempty"`
-	CreatedAt      time.Time       `json:"created_at"`
+	LeaseID       string     `json:"lease_id,omitempty"`
+	LeasedBy      string     `json:"leased_by,omitempty"`
+	LeaseUntil    *time.Time `json:"lease_until,omitempty"`
+	RetryCount    int        `json:"retry_count"`
+	NextAttemptAt *time.Time `json:"next_attempt_at,omitempty"`
+	DispatchedAt  *time.Time `json:"dispatched_at,omitempty"`
+	CreatedAt     time.Time  `json:"created_at"`
 }
 
 type DLQLeaseResponse struct {
@@ -255,15 +255,22 @@ type BatchCanonicalizationCompletedEvent struct {
 	DuplicateRiskAmountMinor    int64           `json:"duplicate_risk_amount_minor"`
 	BatchQualityScore           float64         `json:"batch_quality_score"`
 	ScoreBreakdownJSON          json.RawMessage `json:"score_breakdown_json,omitempty"`
-	TotalAmount                 float64         `json:"total_amount"`
-	CreatedAt                   time.Time       `json:"created_at"`
-	UpdatedAt                   time.Time       `json:"updated_at"`
-	LeaseID                     string          `json:"lease_id,omitempty"`
-	LeasedBy                    string          `json:"leased_by,omitempty"`
-	LeaseUntil                  *time.Time      `json:"lease_until,omitempty"`
-	RetryCount                  int             `json:"retry_count"`
-	NextAttemptAt               *time.Time      `json:"next_attempt_at,omitempty"`
-	DispatchedAt                *time.Time      `json:"dispatched_at,omitempty"`
+	// Deprecated: TotalAmount is a float and must never be read for a money
+	// decision (D10). The intent-engine lease does not populate it (it is
+	// always 0); it is kept only so the published wire shape does not change
+	// silently for any external reader. Use TotalAmountMinor.
+	TotalAmount float64 `json:"total_amount"`
+	// TotalAmountMinor is the batch total in exact int64 paise, produced by
+	// the intent engine from canonical_batches.total_amount. Nil = unknown.
+	TotalAmountMinor *int64     `json:"total_amount_minor,omitempty"`
+	CreatedAt        time.Time  `json:"created_at"`
+	UpdatedAt        time.Time  `json:"updated_at"`
+	LeaseID          string     `json:"lease_id,omitempty"`
+	LeasedBy         string     `json:"leased_by,omitempty"`
+	LeaseUntil       *time.Time `json:"lease_until,omitempty"`
+	RetryCount       int        `json:"retry_count"`
+	NextAttemptAt    *time.Time `json:"next_attempt_at,omitempty"`
+	DispatchedAt     *time.Time `json:"dispatched_at,omitempty"`
 }
 
 type BatchLeaseResponse struct {

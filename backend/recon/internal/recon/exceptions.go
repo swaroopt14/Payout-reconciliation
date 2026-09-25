@@ -37,6 +37,8 @@ type FinanceSummary struct {
 	Currency         string           `json:"currency"`
 	ScoredCount      int              `json:"scored_count"`
 	MatchedCount     int              `json:"matched_count"`
+	// PayoutKPIs is additive (item 8); mirrors Console FinancePayoutKpis.
+	PayoutKPIs *PayoutKPIs `json:"payout_kpis,omitempty"`
 }
 
 type ReconciliationRun struct {
@@ -127,6 +129,9 @@ func DeterministicInvestigation(ex ReconciliationException) InvestigationRecord 
 	case "payout_failed_with_bank_movement":
 		rec.RootCause = "Payout failed, cancelled, or rejected at the Razorpay lifecycle level, but a bank movement was detected."
 		rec.Recommendation = "ESCALATE: confirm whether the debit should be reversed. Do not rename the Razorpay status."
+	case ReasonAmountOnlyNoReference:
+		rec.RootCause = "A bank DEBIT matches the payout amount, but no UTR or reference links it to this payout. Amount alone never proves a match (D17)."
+		rec.Recommendation = "Confirm the UTR or bank reference for the candidate debit before treating the payout as settled."
 	case "payout_missing_bank":
 		rec.RootCause = "Payout is processed but no matching bank DEBIT was found."
 		rec.Recommendation = "MONITOR the bank statement window and UTR. Status stays processed."

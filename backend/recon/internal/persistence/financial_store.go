@@ -565,7 +565,7 @@ func (s *ReconSQLStore) ListInvestigations(ctx context.Context, tenantID, connec
 
 func (s *ReconSQLStore) ListRefunds(ctx context.Context, tenantID, connectorID, paymentID string) ([]recon.RefundFact, error) {
 	q := `
-		SELECT id::text, refund_id, COALESCE(payment_id,''), amount_minor, currency, COALESCE(provider_status,''), COALESCE(source,''), COALESCE(seller_id,''), created_at
+		SELECT id::text, refund_id, COALESCE(payment_id,''), amount_minor, currency, COALESCE(provider_status,''), COALESCE(source,''), COALESCE(seller_id,''), created_at, COALESCE(enrichment_status,'')
 		FROM provider_refund_observations
 		WHERE tenant_id=$1 AND connector_id=$2`
 	args := []any{tenantID, connectorID}
@@ -581,10 +581,71 @@ func (s *ReconSQLStore) ListRefunds(ctx context.Context, tenantID, connectorID, 
 	var out []recon.RefundFact
 	for rows.Next() {
 		var r recon.RefundFact
-		if err := rows.Scan(&r.ID, &r.RefundID, &r.PaymentID, &r.AmountMinor, &r.Currency, &r.ProviderStatus, &r.Source, &r.SellerID, &r.ObservedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.RefundID, &r.PaymentID, &r.AmountMinor, &r.Currency, &r.ProviderStatus, &r.Source, &r.SellerID, &r.ObservedAt, &r.EnrichmentStatus); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// ListSkippedEnrichmentRefunds returns up to limit refunds in one
+// tenant+connector whose transfer enrichment was skipped (D52), oldest first.
+func (s *ReconSQLStore) ListSkippedEnrichmentRefunds(ctx context.Context, tenantID, connectorID string, limit int) ([]recon.RefundFact, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id::text, refund_id, COALESCE(payment_id,''), amount_minor, currency, COALESCE(provider_status,''), COALESCE(source,''), COALESCE(seller_id,''), created_at, COALESCE(enrichment_status,'')
+		FROM provider_refund_observations
+		WHERE tenant_id=$1 AND connector_id=$2
+		  AND enrichment_status IN ('skipped_no_creds', 'skipped_unavailable')
+		ORDER BY updated_at ASC
+		LIMIT $3`, tenantID, connectorID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []recon.RefundFact
+	for rows.Next() {
+		var r recon.RefundFact
+		if err := rows.Scan(&r.ID, &r.RefundID, &r.PaymentID, &r.AmountMinor, &r.Currency, &r.ProviderStatus, &r.Source, &r.SellerID, &r.ObservedAt, &r.EnrichmentStatus); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// CountSkippedEnrichment is the D52 data-gap count for a tenant (all
+// connectors when connectorID is ""): refunds whose transfer enrichment was
+// skipped, grouped by reason. Counts only, no amounts.
+func (s *ReconSQLStore) CountSkippedEnrichment(ctx context.Context, tenantID, connectorID string) (recon.SkippedEnrichmentCounts, error) {
+	out := recon.SkippedEnrichmentCounts{TenantID: tenantID, ConnectorID: connectorID, ByReason: map[string]int64{}}
+	q := `
+		SELECT enrichment_status, COUNT(*)::bigint
+		FROM provider_refund_observations
+		WHERE tenant_id=$1
+		  AND enrichment_status IN ('skipped_no_creds', 'skipped_unavailable')`
+	args := []any{tenantID}
+	if connectorID != "" {
+		q += ` AND connector_id=$2`
+		args = append(args, connectorID)
+	}
+	q += ` GROUP BY enrichment_status`
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return out, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var reason string
+		var n int64
+		if err := rows.Scan(&reason, &n); err != nil {
+			return out, err
+		}
+		out.ByReason[reason] = n
+		out.Total += n
 	}
 	return out, rows.Err()
 }
@@ -596,14 +657,15 @@ func (s *ReconSQLStore) UpsertRefund(ctx context.Context, tenantID, connectorID 
 	r.SellerID = strings.TrimSpace(r.SellerID)
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO provider_refund_observations (
-			id, tenant_id, connector_id, refund_id, payment_id, amount_minor, currency, provider_status, source, seller_id
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+			id, tenant_id, connector_id, refund_id, payment_id, amount_minor, currency, provider_status, source, seller_id, enrichment_status
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
 		ON CONFLICT (tenant_id, connector_id, refund_id) DO UPDATE SET
 			payment_id=EXCLUDED.payment_id, amount_minor=EXCLUDED.amount_minor, currency=EXCLUDED.currency,
 			provider_status=EXCLUDED.provider_status, source=EXCLUDED.source,
 			seller_id=COALESCE(EXCLUDED.seller_id, provider_refund_observations.seller_id),
+			enrichment_status=COALESCE(EXCLUDED.enrichment_status, provider_refund_observations.enrichment_status),
 			updated_at=now()`,
-		r.ID, tenantID, connectorID, r.RefundID, nullIfEmpty(r.PaymentID), r.AmountMinor, nzCur(r.Currency), r.ProviderStatus, nzCurSrc(r.Source), nullIfEmpty(r.SellerID),
+		r.ID, tenantID, connectorID, r.RefundID, nullIfEmpty(r.PaymentID), r.AmountMinor, nzCur(r.Currency), r.ProviderStatus, nzCurSrc(r.Source), nullIfEmpty(r.SellerID), nullIfEmpty(strings.TrimSpace(r.EnrichmentStatus)),
 	)
 	return r, err
 }
@@ -617,6 +679,7 @@ func (s *ReconSQLStore) ListMarketplaceSellerPatterns(ctx context.Context, tenan
 		WHERE tenant_id=$1 AND connector_id=$2
 		  AND seller_id IS NOT NULL AND TRIM(seller_id) <> ''
 		  AND LOWER(TRIM(COALESCE(provider_status, ''))) NOT IN ('failed', 'cancelled', 'canceled')
+		  AND COALESCE(enrichment_status, '') NOT IN ('skipped_no_creds', 'skipped_unavailable')
 		GROUP BY TRIM(seller_id)
 		ORDER BY TRIM(seller_id)`, tenantID, connectorID)
 	if err != nil {
@@ -642,7 +705,7 @@ func (s *ReconSQLStore) ListMerchantBooks(ctx context.Context, tenantID, connect
 		SELECT id::text, COALESCE(invoice_id,''), COALESCE(order_id,''), COALESCE(payment_id,''), COALESCE(payout_id,''),
 			amount_minor, currency, due_at, COALESCE(batch_id,''),
 			COALESCE(tax_minor,0), COALESCE(cgst_minor,0), COALESCE(sgst_minor,0), COALESCE(igst_minor,0),
-			COALESCE(tds_minor,0), COALESCE(hsn,'')
+			COALESCE(tds_minor,0), COALESCE(hsn,''), reupload_amount_minor
 		FROM merchant_book_facts
 		WHERE tenant_id=$1 AND (connector_id=$2 OR connector_id='00000000-0000-0000-0000-000000000000')
 		ORDER BY updated_at ASC`, tenantID, connectorID)
@@ -654,9 +717,14 @@ func (s *ReconSQLStore) ListMerchantBooks(ctx context.Context, tenantID, connect
 	for rows.Next() {
 		var f recon.MerchantBookFact
 		var due sql.NullTime
+		var reupload sql.NullInt64
 		if err := rows.Scan(&f.ID, &f.InvoiceID, &f.OrderID, &f.PaymentID, &f.PayoutID, &f.AmountMinor, &f.Currency, &due, &f.BatchID,
-			&f.TaxMinor, &f.CGSTMinor, &f.SGSTMinor, &f.IGSTMinor, &f.TDSMinor, &f.HSN); err != nil {
+			&f.TaxMinor, &f.CGSTMinor, &f.SGSTMinor, &f.IGSTMinor, &f.TDSMinor, &f.HSN, &reupload); err != nil {
 			return nil, err
+		}
+		if reupload.Valid {
+			v := reupload.Int64
+			f.ReuploadAmountMinor = &v
 		}
 		if due.Valid {
 			f.DueAt = due.Time

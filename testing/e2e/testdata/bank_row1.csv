@@ -1,0 +1,2 @@
+txn_date,description,debit,credit,utr,currency,bank_transaction_id
+2026-12-01,IMPS PAYOUT E2E-{{RUN}}-001,10050,0,{{UTR_ROW1}},INR,E2E-BANK-{{RUN}}-1

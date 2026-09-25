@@ -14,6 +14,8 @@ pub struct Config {
     pub otel_endpoint: Option<String>,
     pub jwt_signing_secret: Option<String>,
     pub jwt_issuer: String,
+    /// Must equal the `aud` edge mints (edge JWT_AUDIENCE, default "zord-console").
+    pub jwt_audience: String,
     pub router_auth_token: Option<String>,
 }
 
@@ -32,6 +34,7 @@ impl Config {
             otel_endpoint: nonempty("OTEL_EXPORTER_OTLP_ENDPOINT"),
             jwt_signing_secret: nonempty("JWT_SIGNING_SECRET"),
             jwt_issuer: nonempty("JWT_ISSUER").unwrap_or_else(|| "zord-edge".into()),
+            jwt_audience: nonempty("JWT_AUDIENCE").unwrap_or_else(|| "zord-console".into()),
             router_auth_token: nonempty("ROUTER_AUTH_TOKEN"),
         }
     }

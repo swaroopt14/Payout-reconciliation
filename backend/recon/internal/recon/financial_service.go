@@ -282,6 +282,11 @@ func (s *FinancialService) GetPayment(ctx context.Context, tenantID, connectorID
 		fr.EntityType = EntityPayment
 	}
 	AnnotateCashFlow(&fr)
+	sellers, err := s.storedPaymentSellers(ctx, tenantID, connectorID, pay.PaymentID)
+	if err != nil {
+		return pay, FinancialResult{}, false, err
+	}
+	fr.SellerID = sellers[pay.PaymentID]
 	return pay, fr, true, nil
 }
 
@@ -475,6 +480,11 @@ func (s *FinancialService) FinanceSummary(ctx context.Context, tenantID, connect
 		}
 		return out.ExposureByReason[i].ExposureMinor > out.ExposureByReason[j].ExposureMinor
 	})
+	kpis, err := s.PayoutKPIs(ctx, tenantID, connectorID)
+	if err != nil {
+		return out, err
+	}
+	out.PayoutKPIs = &kpis
 	return out, nil
 }
 

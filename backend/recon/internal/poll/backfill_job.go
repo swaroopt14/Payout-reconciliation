@@ -8,6 +8,9 @@ import (
 const (
 	ResourcePayments    = "payments"
 	ResourceSettlements = "settlements"
+	// ResourcePayouts is the timer pull of provider payouts (D26). It feeds the
+	// same payout-truth intake as payout webhooks.
+	ResourcePayouts = "payouts"
 
 	TriggerAirflow   = "airflow"
 	TriggerManual    = "manual"
@@ -50,8 +53,8 @@ func (r CreateBackfillRequest) Validate(now time.Time) error {
 	if r.TenantID == "" || r.ConnectorID == "" {
 		return fmt.Errorf("tenant_id and connector_id are required")
 	}
-	if r.ResourceType != ResourcePayments && r.ResourceType != ResourceSettlements {
-		return fmt.Errorf("resource_type must be payments or settlements")
+	if r.ResourceType != ResourcePayments && r.ResourceType != ResourceSettlements && r.ResourceType != ResourcePayouts {
+		return fmt.Errorf("resource_type must be payments, settlements or payouts")
 	}
 	if r.Mode != "test" && r.Mode != "live" {
 		return fmt.Errorf("mode must be test or live")
@@ -130,6 +133,8 @@ type BackfillSummary struct {
 	APIErrorCount         int64         `json:"api_error_count"`
 	Cursor                CursorSummary `json:"cursor"`
 	FreshnessTimestamp    *time.Time    `json:"freshness_timestamp,omitempty"`
+	// LastErrorCode makes a failed run's reason visible (e.g. NO_CREDENTIALS).
+	LastErrorCode string `json:"last_error_code,omitempty"`
 }
 
 type CursorSummary struct {
@@ -148,6 +153,7 @@ func SummaryFromJob(job BackfillJob, cursor BackfillCursor) BackfillSummary {
 		SkippedDuplicateCount: job.DuplicateCount,
 		MissingWebhookCount:   job.MissingWebhookCount,
 		APIErrorCount:         job.ErrorCount,
+		LastErrorCode:         job.LastErrorCode,
 		Cursor: CursorSummary{
 			PageSkip:       cursor.PageSkip,
 			PagesCompleted: cursor.PagesCompleted,

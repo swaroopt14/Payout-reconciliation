@@ -187,6 +187,19 @@ func run() error {
 		dispatchLoop.SetRouter(railrouter.New(u, 2*time.Second))
 		log.Info("rail router enabled", zap.String("url", u))
 	}
+	// Per-tenant connectors.id UUIDs for dispatch events (D44, L7). Interim
+	// config-provided map; unset = disabled, and dispatch fails closed
+	// (every dispatch HELD with CONNECTOR_UNRESOLVED, no PSP call).
+	if raw := strings.TrimSpace(os.Getenv("RELAY_DISPATCH_CONNECTOR_UUID_MAP")); raw != "" {
+		resolver, err := services.ParseStaticConnectorMap(raw)
+		if err != nil {
+			log.Fatal("invalid RELAY_DISPATCH_CONNECTOR_UUID_MAP", zap.Error(err))
+		}
+		dispatchLoop.SetConnectorResolver(resolver)
+		log.Info("dispatch connector UUID map loaded")
+	} else {
+		log.Warn("dispatch connector UUID resolver not configured — dispatches will be HELD (CONNECTOR_UNRESOLVED)")
+	}
 
 	// ── Dispatch Consumer (Kafka → DispatchLoop) ─────────────────────────────
 	dispatchConsumerCfg := &services.DispatchConsumerConfig{

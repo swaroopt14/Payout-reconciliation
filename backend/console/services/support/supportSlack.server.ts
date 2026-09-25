@@ -15,11 +15,20 @@ export type SupportSlackEvent =
       demo?: boolean
     }
 
-function resolveSupportWebhookUrl() {
-  return (
-    process.env.SLACK_SUPPORT_WEBHOOK_URL?.trim() ||
-    'https://hooks.slack.com/services/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'
-  )
+let warnedMissingWebhook = false
+
+/**
+ * Support Slack Incoming Webhook comes only from env (D32: no secrets in code).
+ * Unset → returns null; callers skip sending. The URL itself is never logged.
+ */
+function resolveSupportWebhookUrl(): string | null {
+  const url = process.env.SLACK_SUPPORT_WEBHOOK_URL?.trim()
+  if (url) return url
+  if (!warnedMissingWebhook) {
+    warnedMissingWebhook = true
+    console.warn('[support] SLACK_SUPPORT_WEBHOOK_URL is not set; skipping Slack notifications')
+  }
+  return null
 }
 
 function previewText(body: string, max = 400) {
@@ -106,13 +115,13 @@ async function postIncomingWebhook(webhook: string, text: string): Promise<boole
     const raw = (await res.text()).slice(0, 240)
     clearTimeout(timeout)
     if (!res.ok) {
-      console.warn('[zord] slack webhook rejected', res.status, raw)
+      console.warn('[support] slack webhook rejected', res.status, raw)
       return false
     }
-    console.info('[zord] slack webhook delivered')
+    console.info('[support] slack webhook delivered')
     return true
   } catch (err) {
-    console.warn('[zord] slack webhook failed', err instanceof Error ? err.message : 'unknown')
+    console.warn('[support] slack webhook failed', err instanceof Error ? err.message : 'unknown')
     return false
   }
 }

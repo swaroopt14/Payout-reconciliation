@@ -1,20 +1,20 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { NextRequest } from 'next/server'
 import { applyAuthCookies } from '@/services/auth/server'
 import {
   applyRefreshedSessionCookies,
   resolveSettlementUploadContext,
 } from '@/services/auth/resolvePayoutTenant.server'
+import {
+  labelSettlementResponse,
+  relaySettlementUpstream,
+  resolveSettlementSource,
+  settlementJson,
+} from '@/services/settlementSource.server'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
 
-/** Outcome-engine settlement ingest. Smoke demo uses :8099; live default is :8081. */
-function settlementBase() {
-  const explicit =
-    process.env.ZORD_SETTLEMENT_URL?.trim() || process.env.SMOKE_SIMULATOR_URL?.trim()
-  if (explicit) return explicit.replace(/\/$/, '')
-  return 'http://localhost:8081'
-}
+/** Outcome-engine settlement ingest. Upstream chosen by resolveSettlementSource (live, demo simulator, or 503). */
 
 /**
  * Proxies browser multipart upload to:
@@ -23,20 +23,24 @@ function settlementBase() {
  */
 
 export async function POST(req: NextRequest) {
+  const resolved = resolveSettlementSource()
+  if (!resolved.ok) return resolved.response
+  const source = resolved.source
+
   const contentType = req.headers.get('content-type')
   if (!contentType?.toLowerCase().includes('multipart/form-data')) {
-    return NextResponse.json({ error: 'Expected multipart/form-data with file.' }, { status: 400 })
+    return settlementJson({ error: 'Expected multipart/form-data with file.' }, source, { status: 400 })
   }
 
   const ctx = await resolveSettlementUploadContext(
     req,
     process.env.ZORD_SETTLEMENT_API_KEY ?? process.env.ZORD_BULK_INGEST_API_KEY,
   )
-  if (!ctx.ok) return ctx.response
+  if (!ctx.ok) return labelSettlementResponse(ctx.response, source)
 
   const psp = req.nextUrl.searchParams.get('psp')
   if (!psp?.trim()) {
-    return NextResponse.json({ error: 'Query parameter psp is required.' }, { status: 400 })
+    return settlementJson({ error: 'Query parameter psp is required.' }, source, { status: 400 })
   }
 
   const bodyBuffer = Buffer.from(await req.arrayBuffer())
@@ -47,7 +51,7 @@ export async function POST(req: NextRequest) {
     psp: psp.trim(),
   })
   if (batchId?.trim()) upstreamParams.set('batch_id', batchId.trim())
-  const url = `${settlementBase()}/v1/settlement/upload?${upstreamParams.toString()}`
+  const url = `${source.baseUrl}/v1/settlement/upload?${upstreamParams.toString()}`
 
   const headers: Record<string, string> = {
     'content-type': contentType,
@@ -70,14 +74,7 @@ export async function POST(req: NextRequest) {
       body: bodyBuffer,
       cache: 'no-store',
     })
-    const payload = await upstream.text()
-    const res = new NextResponse(payload, {
-      status: upstream.status,
-      headers: {
-        'content-type': upstream.headers.get('content-type') || 'application/json; charset=utf-8',
-        'cache-control': 'no-store, max-age=0',
-      },
-    })
+    const res = await relaySettlementUpstream(upstream, source, 'no-store, max-age=0')
     if (ctx.refreshedPayload) {
       applyAuthCookies(res, ctx.refreshedPayload)
     }
@@ -87,12 +84,13 @@ export async function POST(req: NextRequest) {
     lastError = error
   }
 
-  const res = NextResponse.json(
+  const res = settlementJson(
     {
       error: 'Settlement upload upstream unavailable',
       upstream: url,
       details: lastError instanceof Error ? lastError.message : 'Unknown upstream error',
     },
+    source,
     { status: 502 },
   )
   if (ctx.refreshedPayload) applyAuthCookies(res, ctx.refreshedPayload)

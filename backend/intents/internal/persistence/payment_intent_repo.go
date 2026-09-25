@@ -560,13 +560,19 @@ func (r *PaymentIntentRepo) GetHeldIntentForApproval(ctx context.Context, tenant
 // outbox row reflects the approval too. An outbox row that zord-relay has
 // already leased/sent as FLAGGED_FOR_REVIEW is not retroactively redelivered
 // — that would need a real evidence/re-emission story, out of scope here.
-func (r *PaymentIntentRepo) ApproveHeldIntent(ctx context.Context, tenantID, intentID string) error {
+// approvedBy is the verified PAYOUT_APPROVER user id (Slice 8, D39); it and
+// approved_at are stamped on the same UPDATE that flips the intent.
+func (r *PaymentIntentRepo) ApproveHeldIntent(ctx context.Context, tenantID, intentID, approvedBy string) error {
+	if strings.TrimSpace(approvedBy) == "" {
+		return fmt.Errorf("approve held intent: approved_by is required")
+	}
 	if _, err := r.db.ExecContext(ctx, `
 		UPDATE payment_intents
 		SET governance_state = 'VALID', governance_decision = 'Pass',
-		    intent_lifecycle_state = 'ACCEPTED', updated_at = now()
+		    intent_lifecycle_state = 'ACCEPTED',
+		    approved_by = $3, approved_at = now(), updated_at = now()
 		WHERE tenant_id = $1 AND intent_id = $2
-	`, tenantID, intentID); err != nil {
+	`, tenantID, intentID, approvedBy); err != nil {
 		return fmt.Errorf("approve held intent: update payment_intents: %w", err)
 	}
 

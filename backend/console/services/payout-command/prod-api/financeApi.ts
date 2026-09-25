@@ -13,6 +13,10 @@ import type {
   FinanceSettlementLine,
   FinanceSummary,
   FinanceEntityTimeline,
+  FinanceMarketplaceRefundGraphResponse,
+  FinanceMarketplaceSellerPatternsResponse,
+  FinanceMarketplaceVelocityQuery,
+  FinanceMarketplaceVelocityResponse,
   RazorpaySettlementListResponse,
   RazorpaySettlementReconResponse,
 } from './financeTypes'
@@ -187,4 +191,34 @@ export async function createFinanceInvestigation(body: {
   }
   const json = (await response.json()) as { data: FinanceInvestigation }
   return { ok: true as const, status: response.status, data: json.data }
+}
+
+// ── Marketplace (live zord-recon only, via the tenant-scoped /api/prod/finance proxy) ──
+
+/** GET /v1/reconciliation/marketplace/seller-patterns (FinancialHandler.ListMarketplaceSellerPatterns). */
+export async function getMarketplaceSellerPatterns() {
+  return fetchProdJsonGetWithMeta<FinanceMarketplaceSellerPatternsResponse>(`${BASE}/marketplace/seller-patterns`)
+}
+
+/** GET /v1/reconciliation/marketplace/refund-graph-exceptions (FinancialHandler.ListMarketplaceRefundGraphExceptions). */
+export async function getMarketplaceRefundGraphExceptions() {
+  return fetchProdJsonGetWithMeta<FinanceMarketplaceRefundGraphResponse>(
+    `${BASE}/marketplace/refund-graph-exceptions`,
+  )
+}
+
+/** GET /v1/reconciliation/marketplace/velocity-flags (FinancialHandler.ListMarketplaceVelocityFlags). */
+export async function getMarketplaceVelocityFlags(opts?: FinanceMarketplaceVelocityQuery) {
+  const q = new URLSearchParams()
+  if (opts?.countThreshold != null && Number.isInteger(opts.countThreshold)) {
+    q.set('count_threshold', String(opts.countThreshold))
+  }
+  if (opts?.sumThresholdMinor != null && Number.isInteger(opts.sumThresholdMinor)) {
+    q.set('sum_threshold', String(opts.sumThresholdMinor))
+  }
+  if (opts?.holdEnabled) q.set('hold_enabled', 'true')
+  const qs = q.toString()
+  return fetchProdJsonGetWithMeta<FinanceMarketplaceVelocityResponse>(
+    `${BASE}/marketplace/velocity-flags${qs ? `?${qs}` : ''}`,
+  )
 }

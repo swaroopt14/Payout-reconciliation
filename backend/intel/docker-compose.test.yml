@@ -11,7 +11,7 @@ services:
     environment:
       - HTTP_PORT=8089
       - ENVIRONMENT=development
-      - DATABASE_URL=postgres://zpi:zpi_secret@postgres:5432/zord_intelligence?sslmode=disable
+      - DATABASE_URL=postgres://zpi:${INTEL_TEST_POSTGRES_PASSWORD:-test-only-db-password}@postgres:5432/zord_intelligence?sslmode=disable
       - KAFKA_BROKERS=kafka:29092
       - KAFKA_GROUP_ID=zord-intelligence-group
       - INTELLIGENCE_MODE=GRADE_A
@@ -20,7 +20,7 @@ services:
       # INTEL-01: test-only value, not the real shared dev secret — this
       # compose stack is self-contained (no token issuer to interoperate
       # with), so any fixed value works here.
-      - JWT_SIGNING_SECRET=test-only-jwt-signing-secret-not-for-production
+      - JWT_SIGNING_SECRET=${INTEL_TEST_JWT_SIGNING_SECRET:-test-only-jwt-signing-secret-not-for-production}
       - JWT_ISSUER=zord-edge
     depends_on:
       postgres:
@@ -51,7 +51,7 @@ services:
       - LR_MODEL_PATH=/data/lr_model.json
       - RCA_MODEL_PATH=/data/rca_model.pk
       - LEAKAGE_MODEL_PATH=/data/leakage_prediction_bundle.joblib
-      - INTELLIGENCE_DATABASE_URL=postgres://zpi:zpi_secret@postgres:5432/zord_intelligence?sslmode=disable
+      - INTELLIGENCE_DATABASE_URL=postgres://zpi:${INTEL_TEST_POSTGRES_PASSWORD:-test-only-db-password}@postgres:5432/zord_intelligence?sslmode=disable
       - RCA_RETRAIN_THRESHOLD=50
       - LEAKAGE_RETRAIN_THRESHOLD=50
     volumes:
@@ -73,7 +73,7 @@ services:
     container_name: zord-intelligence-postgres
     environment:
       POSTGRES_USER: zpi
-      POSTGRES_PASSWORD: zpi_secret
+      POSTGRES_PASSWORD: ${INTEL_TEST_POSTGRES_PASSWORD:-test-only-db-password}
       POSTGRES_DB: zord_intelligence
     command:
       - postgres

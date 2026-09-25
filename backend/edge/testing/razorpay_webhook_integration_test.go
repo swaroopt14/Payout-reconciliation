@@ -5,8 +5,10 @@ package integration_test
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
@@ -17,6 +19,7 @@ import (
 
 	"zord-edge/db"
 	"zord-edge/handler"
+	"zord-edge/internal/secretbox"
 	"zord-edge/validator"
 
 	"github.com/gin-gonic/gin"
@@ -47,11 +50,21 @@ func TestRazorpayWebhook_PostgresIdempotency(t *testing.T) {
 	connectorID := uuid.Must(uuid.NewV7())
 	secret := "whsec_integration_test"
 	ctx := context.Background()
+	// D32: connectors.secret is stored encrypted (enc:v1:).
+	if os.Getenv(secretbox.EnvKey) == "" {
+		k := make([]byte, 32)
+		_, _ = rand.Read(k)
+		t.Setenv(secretbox.EnvKey, base64.StdEncoding.EncodeToString(k))
+	}
+	storedSecret, err := secretbox.Encrypt(secret)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if _, err := sqlDB.ExecContext(ctx, `
 		INSERT INTO connectors (id, tenant_id, provider, connector_id, secret, active, provider_mode)
 		VALUES ($1,$2,'razorpay',$3,$4,true,'test')
-	`, connectorID, tenantID, "int-"+connectorID.String(), secret); err != nil {
+	`, connectorID, tenantID, "int-"+connectorID.String(), storedSecret); err != nil {
 		t.Fatalf("insert connector: %v", err)
 	}
 	t.Cleanup(func() {

@@ -394,8 +394,8 @@ curl -X POST http://localhost:8080/v1/connectors/razorpay \
   -H 'Authorization: Bearer <tenant-token>' \
   -d '{
     "mode": "test",
-    "key_id": "rzp_test_TVY5EjjWRxV6HQ",
-    "key_secret": "cXnP5nmuKcmBfM6doKkVK1sP"
+    "key_id": "rzp_test_FAKEKEYID",
+    "key_secret": "fake_key_secret_not_real"
   }'
 
 # 3. Run connection test

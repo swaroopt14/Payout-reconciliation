@@ -56,6 +56,15 @@ func reconcilePayout(in PayoutInput) FinancialResult {
 		out.MerchantObserved = true
 		out.EvidenceRefs.MerchantFactID = in.Merchant.ID
 	}
+	if c := p.AmountConflictMinor; c != nil && *c != p.AmountMinor {
+		gap := *c - p.AmountMinor
+		if gap < 0 {
+			gap = -gap
+		}
+		out.ObservedAmount = *c
+		out.VarianceAmount = gap
+		return withException(out, ResultVariance, ReasonProviderPayoutAmountChanged, 0.95)
+	}
 	if gap, reason, ok := payoutMerchantGap(p, in.Merchant); ok {
 		out.MerchantAgreed = false
 		out.ExpectedAmount = in.Merchant.AmountMinor
@@ -103,6 +112,13 @@ func reconcilePayout(in PayoutInput) FinancialResult {
 			out.EvidenceRefs.BankObservationID = mismatch.ID
 			out.EvidenceRefs.BankCreditMinor = mismatch.DebitMinor
 			return withException(out, ResultVariance, "amount_mismatch", 0.9)
+		}
+		// D17 / L4: a same-amount debit without a UTR or reference is
+		// AMBIGUOUS at most — never MATCHED, even as the only candidate.
+		if cands := amountOnlyDebits(p, debits); len(cands) == 1 {
+			out.CandidateIDs = bankIDs(cands)
+			out.ObservedAmount = cands[0].DebitMinor
+			return withException(out, ResultAmbiguous, ReasonAmountOnlyNoReference, 0.5)
 		}
 		if len(debits) > 1 {
 			ids := bankIDs(debits)
@@ -153,31 +169,55 @@ func debitBanks(banks []BankTxn) []BankTxn {
 	return out
 }
 
+// ReasonAmountOnlyNoReference: a bank debit matches the payout amount but no
+// UTR or bank/provider reference links it. AMBIGUOUS at most (D17).
+const ReasonAmountOnlyNoReference = "amount_only_no_reference"
+
+// payoutRefMatches reports whether a bank row carries a strong key for the
+// payout: its UTR (UTR or raw UTR column) or the provider payout reference in
+// the bank narration. Amount is never a key (D17).
+func payoutRefMatches(p PayoutFact, b BankTxn) bool {
+	if utr := strings.ToUpper(strings.TrimSpace(p.UTR)); utr != "" {
+		if strings.ToUpper(strings.TrimSpace(b.UTR)) == utr || strings.ToUpper(strings.TrimSpace(b.UTRRaw)) == utr {
+			return true
+		}
+	}
+	if ref := strings.ToUpper(strings.TrimSpace(p.PayoutID)); len(ref) >= 6 && strings.Contains(strings.ToUpper(b.Description), ref) {
+		return true
+	}
+	return false
+}
+
+// exactDebit returns the single debit linked to the payout by a strong key
+// (UTR / reference) whose amount equals the payout amount. There is no
+// amount-only fallback: MATCHED needs a strong key plus the amount (D17).
 func exactDebit(p PayoutFact, debits []BankTxn) *BankTxn {
-	utr := strings.ToUpper(strings.TrimSpace(p.UTR))
-	var utrHits []BankTxn
-	if utr != "" {
-		for _, b := range debits {
-			if strings.ToUpper(strings.TrimSpace(b.UTR)) == utr || strings.ToUpper(strings.TrimSpace(b.UTRRaw)) == utr {
-				utrHits = append(utrHits, b)
-			}
-		}
-		if len(utrHits) == 1 && utrHits[0].DebitMinor == p.AmountMinor {
-			hit := utrHits[0]
-			return &hit
-		}
-	}
-	var amt []BankTxn
+	var refHits []BankTxn
 	for _, b := range debits {
-		if b.DebitMinor == p.AmountMinor && (b.Currency == "" || p.Currency == "" || strings.EqualFold(b.Currency, p.Currency)) {
-			amt = append(amt, b)
+		if payoutRefMatches(p, b) {
+			refHits = append(refHits, b)
 		}
 	}
-	if len(amt) == 1 {
-		hit := amt[0]
+	if len(refHits) == 1 && refHits[0].DebitMinor == p.AmountMinor {
+		hit := refHits[0]
 		return &hit
 	}
 	return nil
+}
+
+// amountOnlyDebits returns debits with the payout's amount (and compatible
+// currency) that carry no strong key for the payout.
+func amountOnlyDebits(p PayoutFact, debits []BankTxn) []BankTxn {
+	var out []BankTxn
+	for _, b := range debits {
+		if payoutRefMatches(p, b) {
+			continue
+		}
+		if b.DebitMinor == p.AmountMinor && (b.Currency == "" || p.Currency == "" || strings.EqualFold(b.Currency, p.Currency)) {
+			out = append(out, b)
+		}
+	}
+	return out
 }
 
 func utrAmountMismatch(p PayoutFact, debits []BankTxn) *BankTxn {

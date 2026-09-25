@@ -139,6 +139,10 @@ type CanonicalIntent struct {
 	BeneficiaryFingerprint *string         `json:"beneficiary_fingerprint,omitempty" db:"beneficiary_fingerprint"`
 	SourceRowNum           *int            `json:"source_row_num,omitempty" db:"source_row_num"`
 	CreatedAt              time.Time       `json:"created_at" db:"created_at"`
+
+	// BusinessIdempotencyKeyV1 is the legacy key the intent engine carries on
+	// the event during the v1->v2 key transition. Compare-only; never stored.
+	BusinessIdempotencyKeyV1 *string `json:"-" db:"-"`
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

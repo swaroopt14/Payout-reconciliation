@@ -1,0 +1,7 @@
+# Per-run generated secrets (testing/e2e/gen-env.sh). Never commit.
+.env.harness
+.env.harness.*
+secrets/
+*.pem
+*.key
+.env.harness.runtime

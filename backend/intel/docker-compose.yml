@@ -13,7 +13,8 @@ services:
     # shared value zord-edge/zord-intent-engine already use locally), not
     # committed here — matches those services' existing env_file pattern.
     env_file:
-      - ./.env
+      - path: ./.env
+        required: false
 
     environment:
       - HTTP_PORT=8089
@@ -35,13 +36,13 @@ services:
       - ENVIRONMENT=development
 
       # Database URL
-      - DATABASE_URL=postgres://zpi:zpi_secret@zord-intelligence-postgres:5432/zord_intelligence?sslmode=disable
+      - DATABASE_URL=postgres://zpi:${INTEL_POSTGRES_PASSWORD:?set INTEL_POSTGRES_PASSWORD (see backend/intel/.env.example)}@zord-intelligence-postgres:5432/zord_intelligence?sslmode=disable
 
       # DB Config
       - DB_HOST=zord-intelligence-postgres
       - DB_PORT=5432
       - DB_USER=zpi
-      - DB_PASSWORD=zpi_secret
+      - DB_PASSWORD=${INTEL_POSTGRES_PASSWORD:?set INTEL_POSTGRES_PASSWORD}
       - DB_NAME=zord_intelligence
       - DB_SSLMODE=disable
 
@@ -77,7 +78,7 @@ services:
       - LR_MODEL_PATH=/data/lr_model.json
       - RCA_MODEL_PATH=/data/rca_model.pkl
       - LEAKAGE_MODEL_PATH=/data/leakage_prediction_bundle.joblib
-      - INTELLIGENCE_DATABASE_URL=postgres://zpi:zpi_secret@zord-intelligence-postgres:5432/zord_intelligence?sslmode=disable
+      - INTELLIGENCE_DATABASE_URL=postgres://zpi:${INTEL_POSTGRES_PASSWORD:?set INTEL_POSTGRES_PASSWORD (see backend/intel/.env.example)}@zord-intelligence-postgres:5432/zord_intelligence?sslmode=disable
       - RCA_RETRAIN_THRESHOLD=50
       - LEAKAGE_RETRAIN_THRESHOLD=50
     volumes:
@@ -116,7 +117,7 @@ services:
 
     environment:
       POSTGRES_USER: zpi
-      POSTGRES_PASSWORD: zpi_secret
+      POSTGRES_PASSWORD: ${INTEL_POSTGRES_PASSWORD:?set INTEL_POSTGRES_PASSWORD}
       POSTGRES_DB: zord_intelligence
 
     volumes:

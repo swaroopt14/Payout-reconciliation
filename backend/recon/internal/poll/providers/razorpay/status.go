@@ -67,6 +67,20 @@ func IsPayoutFailedLike(status string) bool {
 	}
 }
 
+// IsPayoutNoNetOutflow reports whether a payout in this status moves no net
+// money out of the merchant's account: it failed, was cancelled or rejected
+// (failed-like), or was reversed after processing (the money came back).
+// Such a payout is never an expected debit (D15, L5). Pending, scheduled,
+// queued, processing and processed payouts are NOT covered — they stay
+// expected debits until a bank debit lands or a confirmed failure/reversal
+// arrives (D16).
+//
+// This is deliberately separate from IsPayoutFailedLike: reversed is not a
+// failure (payouttruth and recon/payout.go depend on that distinction).
+func IsPayoutNoNetOutflow(status string) bool {
+	return IsPayoutFailedLike(status) || NormalizePayoutStatus(status) == PayoutReversed
+}
+
 func IsPayoutProcessed(status string) bool {
 	return NormalizePayoutStatus(status) == PayoutProcessed
 }

@@ -7,7 +7,8 @@ services:
     ports:
       - "8086:8086"
     env_file:
-      - .env
+      - path: ./.env
+        required: false
     environment:
       - REDIS_URL=redis://zord-prompt-layer-redis:6379/0
       - MEMORY_TTL_SECONDS=3600
@@ -16,7 +17,7 @@ services:
       - VECTOR_INDEX_KAFKA_TOPIC=zord.vector.index.request.v1
       - VECTOR_INDEX_KAFKA_GROUP_ID=zord-prompt-layer-vector-indexer
       - VECTOR_INDEX_KAFKA_MAX_RETRIES=3
-      - VECTOR_INDEX_STATE_DSN=postgres://zpl:zpl_password@zord-prompt-layer-postgres:5432/zord_prompt_layer_db?sslmode=disable
+      - VECTOR_INDEX_STATE_DSN=postgres://zpl:${AGENTS_POSTGRES_PASSWORD:?set AGENTS_POSTGRES_PASSWORD (see backend/agents/.env.example)}@zord-prompt-layer-postgres:5432/zord_prompt_layer_db?sslmode=disable
     networks:
       - zord-network
     depends_on:
@@ -37,7 +38,7 @@ services:
     container_name: zord-prompt-layer-postgres
     environment:
       POSTGRES_USER: zpl
-      POSTGRES_PASSWORD: zpl_password
+      POSTGRES_PASSWORD: ${AGENTS_POSTGRES_PASSWORD:?set AGENTS_POSTGRES_PASSWORD}
       POSTGRES_DB: zord_prompt_layer_db
     volumes:
       - zord_prompt_layer_postgres_data:/var/lib/postgresql/data

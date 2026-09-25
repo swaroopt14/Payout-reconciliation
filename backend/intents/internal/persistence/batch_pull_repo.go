@@ -3,6 +3,7 @@ package persistence
 import (
 	"context"
 	"database/sql"
+	"log"
 	"time"
 
 	"zord-intent-engine/internal/models"
@@ -92,6 +93,7 @@ leased AS (
 		cb.avg_proof_readiness_score,
 		cb.avg_intent_quality_score,
 		cb.duplicate_risk_amount_minor,
+		COALESCE(cb.total_amount, 0)::text as total_amount_text,
 		cb.batch_quality_score,
 		cb.score_breakdown_json,
 		cb.created_at,
@@ -121,6 +123,7 @@ SELECT
 	avg_proof_readiness_score,
 	avg_intent_quality_score,
 	duplicate_risk_amount_minor,
+	total_amount_text,
 	batch_quality_score,
 	score_breakdown_json,
 	created_at,
@@ -149,6 +152,7 @@ ORDER BY created_at ASC;
 		var nextRetry sql.NullTime
 		var lu sql.NullTime
 		var dispAt sql.NullTime
+		var totalAmountText string
 
 		if err := rows.Scan(
 			&e.TenantID,
@@ -168,6 +172,7 @@ ORDER BY created_at ASC;
 			&e.AvgProofReadinessScore,
 			&e.AvgIntentQualityScore,
 			&e.DuplicateRiskAmountMinor,
+			&totalAmountText,
 			&e.BatchQualityScore,
 			&e.ScoreBreakdownJSON,
 			&e.CreatedAt,
@@ -180,6 +185,15 @@ ORDER BY created_at ASC;
 			&dispAt,
 		); err != nil {
 			return "", nil, nil, err
+		}
+
+		// canonical_batches.total_amount is NUMERIC rupees; publish it as
+		// exact int64 paise (D10). If it cannot be converted exactly the
+		// field is left absent — never rounded or guessed.
+		if minor, convErr := models.BatchTotalAmountMinor(totalAmountText); convErr == nil {
+			e.TotalAmountMinor = &minor
+		} else {
+			log.Printf("⚠️ canonical_batches total_amount not exact paise for batch=%s: %v", e.BatchID, convErr)
 		}
 
 		if nextRetry.Valid {

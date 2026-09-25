@@ -15,7 +15,8 @@ import (
 //     order_id; len >= 6) appears in the bank line's UTR, UTRRaw, BankTxnID
 //     or Description (case-insensitive).
 //  2. Fallback pass: exact amount + same currency with the bank ValueDate
-//     inside the projection window (see scheduleBankPool.window).
+//     inside the projection window, only when that is the single candidate
+//     (see claimAll). The drop is labelled amount_only on CashSchedule.Dropped.
 //
 // Each bank line is consumed at most once (one bank line can never drop two
 // refunds or two invoices). Bank lines already cited as evidence by a
@@ -114,10 +115,29 @@ func (p *scheduleBankPool) inWindow(b BankTxn, c scheduleBankClaim) bool {
 	return true
 }
 
+// Drop basis labels on CashSchedule.Dropped (EM decision, cash schedule only —
+// never a recon verdict; D17 still decides MATCHED).
+const (
+	DropBasisReference  = "reference"
+	DropBasisAmountOnly = "amount_only"
+)
+
+// scheduleLanding records why an expected item was dropped: Basis is "" when
+// it did not land.
+type scheduleLanding struct {
+	Basis  string
+	BankID string
+}
+
+func (l scheduleLanding) landed() bool { return l.Basis != "" }
+
 // claimAll resolves claims against the pool: all reference matches first,
-// then amount+currency+window fallback. Returns landed[i] per claim.
-func (p *scheduleBankPool) claimAll(claims []scheduleBankClaim) []bool {
-	landed := make([]bool, len(claims))
+// then the amount-only fallback. The fallback drops an item only when there
+// is exactly one unused same-amount/currency bank line in its window; two or
+// more candidates keep the item projected (EM decision). Each bank line is
+// consumed at most once.
+func (p *scheduleBankPool) claimAll(claims []scheduleBankClaim) []scheduleLanding {
+	landed := make([]scheduleLanding, len(claims))
 	if p == nil || len(p.lines) == 0 {
 		return landed
 	}
@@ -125,22 +145,27 @@ func (p *scheduleBankPool) claimAll(claims []scheduleBankClaim) []bool {
 		for i := range p.lines {
 			if p.eligible(i, c) && bankHasRef(p.lines[i], c.refs) {
 				p.used[i] = true
-				landed[ci] = true
+				landed[ci] = scheduleLanding{Basis: DropBasisReference, BankID: p.lines[i].ID}
 				break
 			}
 		}
 	}
 	for ci, c := range claims {
-		if landed[ci] {
+		if landed[ci].landed() {
 			continue
 		}
+		var cands []int
 		for i := range p.lines {
 			if p.eligible(i, c) && p.inWindow(p.lines[i], c) {
-				p.used[i] = true
-				landed[ci] = true
-				break
+				cands = append(cands, i)
 			}
 		}
+		if len(cands) != 1 {
+			continue // none, or two or more same-amount candidates: keep projected
+		}
+		i := cands[0]
+		p.used[i] = true
+		landed[ci] = scheduleLanding{Basis: DropBasisAmountOnly, BankID: p.lines[i].ID}
 	}
 	return landed
 }

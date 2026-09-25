@@ -10,7 +10,8 @@ services:
     ports:
       - "8083:8083"
     env_file:
-      - ./.env
+      - path: ./.env
+        required: false
     environment:
       - KAFKA_BROKERS=broker1:9092,broker2:9093,broker3:9094
       - KAFKA_TOPIC=payments.ledger.events.v1
@@ -21,17 +22,17 @@ services:
       # Must match SERVICE_JWT_SIGNING_SECRET in zord-token-enclave -- this
       # service mints a signed, scoped JWT for each tokenize call; the
       # enclave verifies it against the same secret.
-      - SERVICE_JWT_SIGNING_SECRET=${SERVICE_JWT_SIGNING_SECRET}
+      - SERVICE_JWT_SIGNING_SECRET=${SERVICE_JWT_SIGNING_SECRET:?set SERVICE_JWT_SIGNING_SECRET}
       # Must match zord-edge (base64-encoded 32-byte AES key for API key decryption).
-      - ZORD_VAULT_KEY=${ZORD_VAULT_KEY}
+      - ZORD_VAULT_KEY=${ZORD_VAULT_KEY:?set ZORD_VAULT_KEY}
       - DB_HOST=zord-intent-postgres
       - DB_PORT=5432
       - DB_USER=intent_user
-      - DB_PASSWORD=intent_password
+      - DB_PASSWORD=${INTENTS_POSTGRES_PASSWORD:?set INTENTS_POSTGRES_PASSWORD (see backend/intents/.env.example)}
       - DB_NAME=zord_intent_engine_db
       - DB_SSLMODE=disable
       - VAULT_JOURNAL_URL=http://host.docker.internal:8081
-      - PII_TOKEN_SECRET=your-secret-key-for-pii-tokenization-change-in-production
+      - PII_TOKEN_SECRET=${PII_TOKEN_SECRET:?set PII_TOKEN_SECRET}
       - ENVIRONMENT=production
 
       - AWS_REGION=ap-south-1
@@ -53,7 +54,7 @@ services:
     command: postgres -c 'max_connections=100'
     environment:
       - POSTGRES_USER=intent_user
-      - POSTGRES_PASSWORD=intent_password
+      - POSTGRES_PASSWORD=${INTENTS_POSTGRES_PASSWORD:?set INTENTS_POSTGRES_PASSWORD}
       - POSTGRES_DB=zord_intent_engine_db
     volumes:
       - postgres_intent_data_fix:/var/lib/postgresql/data

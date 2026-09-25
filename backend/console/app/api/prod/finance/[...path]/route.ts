@@ -4,18 +4,17 @@ import {
   applyRefreshedSessionCookies,
   requireSessionTenantForProdProxy,
 } from '@/services/auth/resolvePayoutTenant.server'
+import {
+  labelSettlementResponse,
+  relaySettlementUpstream,
+  resolveSettlementSource,
+  settlementJson,
+} from '@/services/settlementSource.server'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
 
 const ALLOWED = new Set(['GET', 'POST'])
-
-function reconBase() {
-  const explicit =
-    process.env.ZORD_SETTLEMENT_URL?.trim() || process.env.SMOKE_SIMULATOR_URL?.trim()
-  if (explicit) return explicit.replace(/\/$/, '')
-  return 'http://localhost:8081'
-}
 
 function connectorId() {
   return (
@@ -34,18 +33,23 @@ function safePath(segments: string[]): string | null {
 }
 
 async function proxy(request: NextRequest, segments: string[]): Promise<NextResponse> {
+  // Source first (pure env, no I/O): unconfigured → 503 and nothing is fetched.
+  const resolved = resolveSettlementSource()
+  if (!resolved.ok) return resolved.response
+  const source = resolved.source
+
   const method = request.method.toUpperCase()
   if (!ALLOWED.has(method)) {
-    return NextResponse.json({ error: 'method_not_allowed' }, { status: 405 })
+    return settlementJson({ error: 'method_not_allowed' }, source, { status: 405 })
   }
 
   const rest = safePath(segments)
   if (!rest) {
-    return NextResponse.json({ error: 'invalid_path' }, { status: 400 })
+    return settlementJson({ error: 'invalid_path' }, source, { status: 400 })
   }
 
   const gate = await requireSessionTenantForProdProxy(request)
-  if (!gate.ok) return gate.response
+  if (!gate.ok) return labelSettlementResponse(gate.response, source)
   const tenantId = gate.tenantId
 
   const params = new URLSearchParams(request.nextUrl.searchParams)
@@ -53,7 +57,7 @@ async function proxy(request: NextRequest, segments: string[]): Promise<NextResp
   params.set('tenant_id', tenantId)
   if (!params.get('connector_id')) params.set('connector_id', connectorId())
 
-  const url = `${reconBase()}/v1/reconciliation/${rest}?${params.toString()}`
+  const url = `${source.baseUrl}/v1/reconciliation/${rest}?${params.toString()}`
   const accessCookie = request.cookies.get('zord_access_token')?.value
   const authHeader = accessCookie?.trim() ? `Bearer ${accessCookie.trim()}` : ''
 
@@ -87,24 +91,18 @@ async function proxy(request: NextRequest, segments: string[]): Promise<NextResp
       body: method === 'POST' ? body || '{}' : undefined,
       cache: 'no-store',
     })
-    const text = await upstream.text()
-    const res = new NextResponse(text, {
-      status: upstream.status,
-      headers: {
-        'content-type': upstream.headers.get('content-type') || 'application/json; charset=utf-8',
-        'cache-control': 'no-store',
-      },
-    })
+    const res = await relaySettlementUpstream(upstream, source)
     if (gate.refreshedPayload) applyAuthCookies(res, gate.refreshedPayload)
     applyRefreshedSessionCookies(res, gate.refreshedPayload)
     return res
   } catch (error) {
-    const res = NextResponse.json(
+    const res = settlementJson(
       {
         error: 'finance recon upstream unavailable',
         upstream: url,
         details: error instanceof Error ? error.message : 'unknown',
       },
+      source,
       { status: 502 },
     )
     applyRefreshedSessionCookies(res, gate.refreshedPayload)

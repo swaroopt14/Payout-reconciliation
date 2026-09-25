@@ -36,6 +36,9 @@ npm run build
 npm start
 ```
 
+Cash/settlement routes return 503 unless `.env.local` sets `ZORD_SETTLEMENT_URL=http://localhost:8081` (live recon) or the demo pair `SMOKE_SIMULATOR_URL=http://localhost:8099` + `CLEARLINE_DEMO_SETTLEMENT_SIMULATOR=1` (see `.env.example`, alongside `env.docker-compose.example`).
+The demo pair serves fixture data labelled demo (`X-Clearline-Data: demo`) and must never be used for a live tenant.
+
 ## 🌐 Access Points
 
 - **Application**: http://localhost:3000

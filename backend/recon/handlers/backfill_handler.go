@@ -34,6 +34,12 @@ func (h *BackfillHandler) CreateSettlements(c *gin.Context) {
 	h.createAndMaybeRun(c, poll.ResourceSettlements, true)
 }
 
+// CreatePayouts is the timer pull of payouts (D26): same payout-truth intake
+// as webhooks, de-duplicated by provider payout_id.
+func (h *BackfillHandler) CreatePayouts(c *gin.Context) {
+	h.createAndMaybeRun(c, poll.ResourcePayouts, true)
+}
+
 func (h *BackfillHandler) createAndMaybeRun(c *gin.Context, resource string, run bool) {
 	var body createBackfillBody
 	if err := c.ShouldBindJSON(&body); err != nil {
@@ -91,6 +97,8 @@ func (h *BackfillHandler) createAndMaybeRun(c *gin.Context, resource string, run
 			ctx := context.Background()
 			if res == poll.ResourceSettlements {
 				_, _ = svc.RunSettlements(ctx, jobID)
+			} else if res == poll.ResourcePayouts {
+				_, _ = svc.RunPayouts(ctx, jobID)
 			} else {
 				_, _ = svc.RunPayments(ctx, jobID)
 			}
