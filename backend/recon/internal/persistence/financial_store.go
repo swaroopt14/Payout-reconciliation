@@ -565,7 +565,7 @@ func (s *ReconSQLStore) ListInvestigations(ctx context.Context, tenantID, connec
 
 func (s *ReconSQLStore) ListRefunds(ctx context.Context, tenantID, connectorID, paymentID string) ([]recon.RefundFact, error) {
 	q := `
-		SELECT id::text, refund_id, COALESCE(payment_id,''), amount_minor, currency, COALESCE(provider_status,''), COALESCE(source,''), COALESCE(seller_id,'')
+		SELECT id::text, refund_id, COALESCE(payment_id,''), amount_minor, currency, COALESCE(provider_status,''), COALESCE(source,''), COALESCE(seller_id,''), created_at
 		FROM provider_refund_observations
 		WHERE tenant_id=$1 AND connector_id=$2`
 	args := []any{tenantID, connectorID}
@@ -581,7 +581,7 @@ func (s *ReconSQLStore) ListRefunds(ctx context.Context, tenantID, connectorID, 
 	var out []recon.RefundFact
 	for rows.Next() {
 		var r recon.RefundFact
-		if err := rows.Scan(&r.ID, &r.RefundID, &r.PaymentID, &r.AmountMinor, &r.Currency, &r.ProviderStatus, &r.Source, &r.SellerID); err != nil {
+		if err := rows.Scan(&r.ID, &r.RefundID, &r.PaymentID, &r.AmountMinor, &r.Currency, &r.ProviderStatus, &r.Source, &r.SellerID, &r.ObservedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
@@ -679,3 +679,86 @@ func nzCurSrc(s string) string {
 	}
 	return s
 }
+
+func (s *ReconSQLStore) ListTransferEdges(ctx context.Context, tenantID, connectorID string) ([]recon.MarketplaceTransferEdge, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id::text, tenant_id::text, connector_id::text,
+			transfer_id, COALESCE(reverse_transfer_id,''), COALESCE(payment_id,''), COALESCE(refund_id,''),
+			COALESCE(seller_id,''), amount_minor, currency, transfer_at, reverse_at, created_at
+		FROM marketplace_transfer_edges
+		WHERE tenant_id=$1 AND connector_id=$2
+		ORDER BY created_at ASC`, tenantID, connectorID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []recon.MarketplaceTransferEdge
+	for rows.Next() {
+		var e recon.MarketplaceTransferEdge
+		var transferAt, reverseAt sql.NullTime
+		if err := rows.Scan(
+			&e.ID, &e.TenantID, &e.ConnectorID,
+			&e.TransferID, &e.ReverseTransferID, &e.PaymentID, &e.RefundID,
+			&e.SellerID, &e.AmountMinor, &e.Currency, &transferAt, &reverseAt, &e.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		if transferAt.Valid {
+			e.TransferAt = transferAt.Time
+		}
+		if reverseAt.Valid {
+			e.ReverseAt = reverseAt.Time
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+func (s *ReconSQLStore) UpsertTransferEdge(ctx context.Context, tenantID, connectorID string, e recon.MarketplaceTransferEdge) (recon.MarketplaceTransferEdge, error) {
+	if e.ID == "" {
+		e.ID = uuid.Must(uuid.NewV7()).String()
+	}
+	e.TenantID = tenantID
+	e.ConnectorID = connectorID
+	e.TransferID = strings.TrimSpace(e.TransferID)
+	e.ReverseTransferID = strings.TrimSpace(e.ReverseTransferID)
+	e.PaymentID = strings.TrimSpace(e.PaymentID)
+	e.RefundID = strings.TrimSpace(e.RefundID)
+	e.SellerID = strings.TrimSpace(e.SellerID)
+	var transferAt, reverseAt any
+	if !e.TransferAt.IsZero() {
+		transferAt = e.TransferAt
+	}
+	if !e.ReverseAt.IsZero() {
+		reverseAt = e.ReverseAt
+	}
+	fromReversal := e.RefundIDFromReversal && e.RefundID != ""
+	e.RefundIDFromReversal = false
+	_, err := s.db.ExecContext(ctx, upsertTransferEdgeSQL,
+		e.ID, tenantID, connectorID, e.TransferID, nullIfEmpty(e.ReverseTransferID), e.PaymentID, nullIfEmpty(e.RefundID),
+		e.SellerID, e.AmountMinor, nzCur(e.Currency), transferAt, reverseAt, fromReversal,
+	)
+	return e, err
+}
+
+// upsertTransferEdgeSQL: refund_id COALESCEs toward the existing non-empty
+// value; only $13 (refund_id from a reversal's customer_refund_id) may replace
+// it. Mirrors MemoryFinancialStore.UpsertTransferEdge.
+const upsertTransferEdgeSQL = `
+		INSERT INTO marketplace_transfer_edges (
+			id, tenant_id, connector_id, transfer_id, reverse_transfer_id, payment_id, refund_id,
+			seller_id, amount_minor, currency, transfer_at, reverse_at
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+		ON CONFLICT (tenant_id, connector_id, transfer_id) DO UPDATE SET
+			reverse_transfer_id=COALESCE(NULLIF(EXCLUDED.reverse_transfer_id,''), marketplace_transfer_edges.reverse_transfer_id),
+			payment_id=COALESCE(NULLIF(EXCLUDED.payment_id,''), marketplace_transfer_edges.payment_id),
+			refund_id=CASE
+				WHEN $13::boolean AND NULLIF(EXCLUDED.refund_id,'') IS NOT NULL THEN EXCLUDED.refund_id
+				ELSE COALESCE(NULLIF(marketplace_transfer_edges.refund_id,''), NULLIF(EXCLUDED.refund_id,''))
+			END,
+			seller_id=COALESCE(NULLIF(EXCLUDED.seller_id,''), marketplace_transfer_edges.seller_id),
+			amount_minor=CASE WHEN EXCLUDED.amount_minor = 0 THEN marketplace_transfer_edges.amount_minor ELSE EXCLUDED.amount_minor END,
+			currency=EXCLUDED.currency,
+			transfer_at=COALESCE(EXCLUDED.transfer_at, marketplace_transfer_edges.transfer_at),
+			reverse_at=COALESCE(EXCLUDED.reverse_at, marketplace_transfer_edges.reverse_at),
+			updated_at=now()`

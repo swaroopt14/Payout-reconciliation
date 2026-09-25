@@ -7,6 +7,7 @@ import type { FinanceEntityTimeline } from '@/services/payout-command/prod-api/f
 import { formatPaise } from './reasonCopy'
 import { RZ_MUTED, RZ_PAGE, RZ_WRAP } from './razorpayChrome'
 import {
+  isPendingSellerReverseTransfer,
   mapFinanceRowToPayoutRecon,
   mapPaymentResponseToReconRow,
   mapPayoutResponseToReconRow,
@@ -154,7 +155,7 @@ export function PayoutTraceSurface({ payoutId }: { payoutId: string }) {
                     nextSteps: row.nextSteps,
                     payoutId: row.payoutId,
                   })}
-                  financialImpactMinor={row.varianceMinor || row.amountMinor}
+                  financialImpactMinor={isPendingSellerReverseTransfer(row) ? 0 : row.varianceMinor || row.amountMinor}
                   confidence={undefined}
                   autoStart
                 />

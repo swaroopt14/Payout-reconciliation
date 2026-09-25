@@ -41,6 +41,12 @@ type Envelope struct {
 	PaymentID          string     `json:"payment_id"`
 	// SellerID is optional; set only when Connectors/Edge supply it. Never invent.
 	SellerID           string     `json:"seller_id,omitempty"`
+	// TransferID is the forward Route transfer id (trf_…). Set by Edge/Connectors
+	// on transfer observations, or as the parent transfer on reversal events.
+	TransferID         string     `json:"transfer_id,omitempty"`
+	// ReverseTransferID is the Route reversal id (rvrsl_…). When set with TransferID,
+	// observe upserts reverse_transfer_id on the same marketplace_transfer_edges row.
+	ReverseTransferID  string     `json:"reverse_transfer_id,omitempty"`
 }
 
 func ParseEnvelope(raw []byte) (Envelope, error) {

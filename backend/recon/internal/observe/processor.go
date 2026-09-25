@@ -3,6 +3,7 @@ package observe
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -42,12 +43,25 @@ type TransferLookup interface {
 	ListTransfersForPayment(ctx context.Context, paymentID string) ([]razorpay.TransferResponse, error)
 }
 
+// TransferReversalLookup optionally resolves transfer→reversals so observe can
+// set reverse_transfer_id on the same marketplace_transfer_edges row.
+type TransferReversalLookup interface {
+	ListReversalsForTransfer(ctx context.Context, transferID string) ([]razorpay.ReversalResponse, error)
+}
+
+// TransferEdgeSink persists reference-only marketplace transfer graph edges.
+// amount_minor is correlation only — never bank cash / never MATCHED.
+type TransferEdgeSink interface {
+	UpsertTransferEdge(ctx context.Context, tenantID, connectorID string, e recon.MarketplaceTransferEdge) (recon.MarketplaceTransferEdge, error)
+}
+
 type Processor struct {
 	store     poll.Store
 	truth     *paymenttruth.Processor
 	payouts   *payouttruth.Processor
 	Refunds   RefundSink
 	Transfers TransferLookup
+	Edges     TransferEdgeSink
 }
 
 func NewProcessor(store poll.Store) *Processor {
@@ -81,6 +95,9 @@ func (p *Processor) Apply(ctx context.Context, env Envelope) (Result, error) {
 		return Result{Kind: ResultSkipped, EventType: env.ProviderEventType}, nil
 	}
 	if !ok {
+		if edgeRes, handled, err := p.applyTransferEdge(ctx, env); handled {
+			return edgeRes, err
+		}
 		return p.applyRefundOrPayout(ctx, env)
 	}
 	if strings.TrimSpace(env.TenantID) == "" || strings.TrimSpace(env.ConnectorID) == "" {
@@ -121,7 +138,7 @@ func (p *Processor) applyRefundOrPayout(ctx context.Context, env Envelope) (Resu
 		if strings.TrimSpace(env.TenantID) == "" || strings.TrimSpace(env.ConnectorID) == "" {
 			return Result{}, fmt.Errorf("missing tenant_id or connector_id")
 		}
-		if err := p.enrichRefundSellerID(ctx, &item); err != nil {
+		if err := p.enrichRefundAndUpsertEdges(ctx, env.TenantID, env.ConnectorID, &item); err != nil {
 			return Result{}, err
 		}
 		saved, err := p.Refunds.UpsertRefund(ctx, env.TenantID, env.ConnectorID, MapRefundFact(item))
@@ -133,20 +150,93 @@ func (p *Processor) applyRefundOrPayout(ctx context.Context, env Envelope) (Resu
 	return p.applyPayout(ctx, env)
 }
 
-func (p *Processor) enrichRefundSellerID(ctx context.Context, item *reconRefund) error {
-	if item == nil || strings.TrimSpace(item.SellerID) != "" {
+// enrichRefundAndUpsertEdges lists payment→transfers when seller_id is empty
+// and/or Edges sink is wired. Seller enrichment never invents; edges are
+// reference-only (amount_minor correlation). Reverse ids are filled when the
+// TransferLookup also implements TransferReversalLookup.
+func (p *Processor) enrichRefundAndUpsertEdges(ctx context.Context, tenantID, connectorID string, item *reconRefund) error {
+	if item == nil {
 		return nil
 	}
 	paymentID := strings.TrimSpace(item.PaymentID)
-	if paymentID == "" || p.Transfers == nil {
+	needSeller := strings.TrimSpace(item.SellerID) == ""
+	needEdges := p.Edges != nil
+	if paymentID == "" || p.Transfers == nil || (!needSeller && !needEdges) {
 		return nil
 	}
 	transfers, err := p.Transfers.ListTransfersForPayment(ctx, paymentID)
 	if err != nil {
 		return err
 	}
-	EnrichRefundWithTransfers(item, transfers)
+	if needSeller {
+		EnrichRefundWithTransfers(item, transfers)
+	}
+	if needEdges {
+		return p.upsertEdgesFromTransfers(ctx, tenantID, connectorID, item.PaymentID, item.RefundID, item.SellerID, transfers)
+	}
 	return nil
+}
+
+func (p *Processor) upsertEdgesFromTransfers(ctx context.Context, tenantID, connectorID, paymentID, refundID, refundSellerID string, transfers []razorpay.TransferResponse) error {
+	if p == nil || p.Edges == nil {
+		return nil
+	}
+	edges := MarketplaceEdgesFromTransfers(paymentID, refundID, refundSellerID, transfers)
+	var revLookup TransferReversalLookup
+	if r, ok := p.Transfers.(TransferReversalLookup); ok {
+		revLookup = r
+	}
+	for _, e := range edges {
+		if revLookup != nil && strings.TrimSpace(e.TransferID) != "" {
+			revs, err := revLookup.ListReversalsForTransfer(ctx, e.TransferID)
+			if err != nil {
+				return err
+			}
+			if len(revs) > 0 {
+				r0 := revs[0]
+				e.ReverseTransferID = strings.TrimSpace(r0.ID)
+				e.ReverseAt = razorpay.TransferCreatedAt(r0.CreatedAt)
+				// Razorpay customer_refund_id on the reversal is authoritative.
+				if crid := strings.TrimSpace(r0.CustomerRefundID); crid != "" {
+					e.RefundID = crid
+					e.RefundIDFromReversal = true
+				}
+			}
+		}
+		if _, err := p.Edges.UpsertTransferEdge(ctx, tenantID, connectorID, e); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (p *Processor) applyTransferEdge(ctx context.Context, env Envelope) (Result, bool, error) {
+	e, ok, err := NormalizeTransferEdge(env)
+	if err != nil {
+		if isReversalEvent(env.ProviderEventType, env.ProviderEntityType) {
+			log.Printf("WARN observe: skipping reversal without transfer_id/reverse id tenant=%s connector=%s entity_id=%q err=%v",
+				env.TenantID, env.ConnectorID, env.ProviderEntityID, err)
+		}
+		return Result{Kind: ResultSkipped, EventType: env.ProviderEventType}, true, nil
+	}
+	if !ok {
+		return Result{}, false, nil
+	}
+	if p.Edges == nil {
+		return Result{Kind: ResultSkipped, EventType: env.ProviderEventType, PaymentID: e.PaymentID}, true, nil
+	}
+	if strings.TrimSpace(env.TenantID) == "" || strings.TrimSpace(env.ConnectorID) == "" {
+		return Result{}, true, fmt.Errorf("missing tenant_id or connector_id")
+	}
+	saved, err := p.Edges.UpsertTransferEdge(ctx, env.TenantID, env.ConnectorID, e)
+	if err != nil {
+		return Result{}, true, err
+	}
+	kind := ResultInserted
+	if strings.TrimSpace(saved.ReverseTransferID) != "" {
+		kind = ResultUpdated
+	}
+	return Result{Kind: kind, PaymentID: saved.PaymentID, EventType: env.ProviderEventType}, true, nil
 }
 
 func (p *Processor) applyPayout(ctx context.Context, env Envelope) (Result, error) {

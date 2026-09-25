@@ -30,6 +30,8 @@ type Fact struct {
 	Field    string `json:"field"`
 	Value    any    `json:"value"`
 	Currency string `json:"currency,omitempty"`
+	// Label is the user-facing wording; expected-cash facts carry the projection label.
+	Label string `json:"label,omitempty"`
 }
 
 type Calculation struct {
@@ -59,15 +61,16 @@ type FinanceContext struct {
 }
 
 type Response struct {
-	Answer       string        `json:"answer"`
-	Intent       string        `json:"intent"`
-	Facts        []Fact        `json:"facts"`
-	Calculations []Calculation `json:"calculations"`
-	Evidence     []string      `json:"evidence"`
-	Sources      []string      `json:"sources"`
-	Confidence   float64       `json:"confidence"`
-	Limitations  []string      `json:"limitations"`
-	AuditID      string        `json:"audit_id,omitempty"`
+	Answer        string        `json:"answer"`
+	Intent        string        `json:"intent"`
+	Facts         []Fact        `json:"facts"`
+	Calculations  []Calculation `json:"calculations"`
+	Evidence      []string      `json:"evidence"`
+	Sources       []string      `json:"sources"`
+	Confidence    float64       `json:"confidence"`
+	Limitations   []string      `json:"limitations"`
+	HumanNextStep string        `json:"human_next_step,omitempty"`
+	AuditID       string        `json:"audit_id,omitempty"`
 }
 
 type QueryRequest struct {

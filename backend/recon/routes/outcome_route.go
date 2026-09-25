@@ -78,6 +78,8 @@ func ReconRoutes(router *gin.Engine, h *handlers.ReconHandler, imp *handlers.Imp
 			protected.GET("/reconciliation/ledger", fin.GetLedger)
 			protected.GET("/reconciliation/refunds", fin.ListRefunds)
 			protected.GET("/reconciliation/marketplace/seller-patterns", fin.ListMarketplaceSellerPatterns)
+			protected.GET("/reconciliation/marketplace/refund-graph-exceptions", fin.ListMarketplaceRefundGraphExceptions)
+			protected.GET("/reconciliation/marketplace/velocity-flags", fin.ListMarketplaceVelocityFlags)
 			protected.GET("/reconciliation/exceptions", fin.ListExceptions)
 			protected.GET("/reconciliation/exceptions/:id", fin.GetException)
 			protected.POST("/reconciliation/run", fin.Run)

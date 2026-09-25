@@ -7,31 +7,33 @@ import (
 )
 
 const (
-	GetPayment         = "get_payment"
-	GetPaymentEvents   = "get_payment_events"
-	GetSettlement      = "get_settlement"
-	SearchSettlements  = "search_settlements"
-	GetBankTransaction = "get_bank_transaction"
-	SearchBankTxns     = "search_bank_transactions"
-	GetReconciliation  = "get_reconciliation"
-	GetException       = "get_exception"
-	GetRefund          = "get_refund"
-	GetEvidence        = "get_evidence"
-	GetPayout          = "get_payout"
-	GetPayoutEvents    = "get_payout_events"
-	GetSLAPolicy       = "get_sla_policy"
-	GetSimilarCases    = "get_similar_cases"
-	GetLedgerEntry       = "get_ledger_entry"
-	GetEvidencePack      = "get_evidence_pack"
-	GetDecisionTrace     = "get_decision_trace"
-	GetCalculationTrace  = "get_calculation_trace"
-	GetAuditTrail        = "get_audit_trail"
-	VerifyEvidenceTool   = "verify_evidence"
-	GetSourceSnapshot    = "get_source_snapshot"
-	GetReconSummary      = "get_recon_summary"
-	GetCashPosition      = "get_cash_position"
-	GetTaxBreakdown      = "get_tax_breakdown"
-	GetCashSchedule      = "get_cash_schedule"
+	GetPayment                          = "get_payment"
+	GetPaymentEvents                    = "get_payment_events"
+	GetSettlement                       = "get_settlement"
+	SearchSettlements                   = "search_settlements"
+	GetBankTransaction                  = "get_bank_transaction"
+	SearchBankTxns                      = "search_bank_transactions"
+	GetReconciliation                   = "get_reconciliation"
+	GetException                        = "get_exception"
+	GetRefund                           = "get_refund"
+	GetEvidence                         = "get_evidence"
+	GetPayout                           = "get_payout"
+	GetPayoutEvents                     = "get_payout_events"
+	GetSLAPolicy                        = "get_sla_policy"
+	GetSimilarCases                     = "get_similar_cases"
+	GetLedgerEntry                      = "get_ledger_entry"
+	GetEvidencePack                     = "get_evidence_pack"
+	GetDecisionTrace                    = "get_decision_trace"
+	GetCalculationTrace                 = "get_calculation_trace"
+	GetAuditTrail                       = "get_audit_trail"
+	VerifyEvidenceTool                  = "verify_evidence"
+	GetSourceSnapshot                   = "get_source_snapshot"
+	GetReconSummary                     = "get_recon_summary"
+	GetCashPosition                     = "get_cash_position"
+	GetTaxBreakdown                     = "get_tax_breakdown"
+	GetCashSchedule                     = "get_cash_schedule"
+	GetMarketplaceRefundGraphExceptions = "get_marketplace_refund_graph_exceptions"
+	GetMarketplaceVelocityFlags         = "get_marketplace_velocity_flags"
 )
 
 func Phase6Names() []string {
@@ -43,6 +45,7 @@ func Phase6Names() []string {
 		GetEvidencePack, GetDecisionTrace, GetCalculationTrace, GetAuditTrail,
 		VerifyEvidenceTool, GetSourceSnapshot, GetReconSummary, GetCashPosition,
 		GetTaxBreakdown, GetCashSchedule,
+		GetMarketplaceRefundGraphExceptions, GetMarketplaceVelocityFlags,
 	}
 }
 
@@ -134,11 +137,11 @@ func (c *OutcomeClient) GetLedgerEntry(tenantID, connectorID, paymentID string) 
 	}
 	if body == nil || body["error"] == "not_found" || body["error"] == "none" {
 		return map[string]any{
-			"entity_type":  "payment",
-			"entity_id":    paymentID,
-			"lines":        []any{},
-			"balanced":     true,
-			"limitations":  []string{"No derived ledger lines were returned. Do not invent a ledger entry."},
+			"entity_type": "payment",
+			"entity_id":   paymentID,
+			"lines":       []any{},
+			"balanced":    true,
+			"limitations": []string{"No derived ledger lines were returned. Do not invent a ledger entry."},
 		}, nil
 	}
 	return body, nil
@@ -191,6 +194,23 @@ func (c *OutcomeClient) GetCashSchedule(tenantID, connectorID string) (map[strin
 	return c.getOptional("/v1/reconciliation/cash-schedule", tenantQ(tenantID, connectorID))
 }
 
+func (c *OutcomeClient) GetMarketplaceRefundGraphExceptions(tenantID, connectorID string) (map[string]any, error) {
+	return c.getOptional("/v1/reconciliation/marketplace/refund-graph-exceptions", tenantQ(tenantID, connectorID))
+}
+
+// GetMarketplaceVelocityFlags fetches velocity ops flags.
+// HoldRecommended appears only when holdEnabled is true (merchant HoldEnabled).
+// Agents never auto-block payouts from this surface.
+func (c *OutcomeClient) GetMarketplaceVelocityFlags(tenantID, connectorID string, holdEnabled bool) (map[string]any, error) {
+	q := tenantQ(tenantID, connectorID)
+	if holdEnabled {
+		q.Set("hold_enabled", "true")
+	} else {
+		q.Set("hold_enabled", "false")
+	}
+	return c.getOptional("/v1/reconciliation/marketplace/velocity-flags", q)
+}
+
 func CallTool(c *OutcomeClient, name, tenantID, connectorID, id string) (map[string]any, error) {
 	switch name {
 	case GetPayment, GetPaymentEvents, GetReconciliation:
@@ -236,6 +256,11 @@ func CallTool(c *OutcomeClient, name, tenantID, connectorID, id string) (map[str
 		return c.GetTaxBreakdown(tenantID, connectorID, id)
 	case GetCashSchedule:
 		return c.GetCashSchedule(tenantID, connectorID)
+	case GetMarketplaceRefundGraphExceptions:
+		return c.GetMarketplaceRefundGraphExceptions(tenantID, connectorID)
+	case GetMarketplaceVelocityFlags:
+		holdEnabled := id == "true" || id == "1" || strings.EqualFold(id, "hold_enabled")
+		return c.GetMarketplaceVelocityFlags(tenantID, connectorID, holdEnabled)
 	default:
 		return nil, fmt.Errorf("unknown tool %s", name)
 	}

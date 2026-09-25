@@ -78,6 +78,9 @@ type RefundFact struct {
 	// SellerID is optional marketplace seller identity from Connectors/Edge ingest.
 	// Empty/omit means absent: still a normal refund; does not join any seller cluster.
 	SellerID string `json:"seller_id,omitempty"`
+	// ObservedAt is when the refund observation was seen (DB created_at).
+	// Used only for schedule projection timing; zero means unknown timing.
+	ObservedAt time.Time `json:"observed_at,omitempty"`
 }
 
 // JoinsSellerCluster is the Slice 1 cluster-join predicate for later Marketplace

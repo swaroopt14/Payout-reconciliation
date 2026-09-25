@@ -31,6 +31,8 @@ type FinancialStore interface {
 	ListRefunds(ctx context.Context, tenantID, connectorID, paymentID string) ([]RefundFact, error)
 	UpsertRefund(ctx context.Context, tenantID, connectorID string, r RefundFact) (RefundFact, error)
 	ListMarketplaceSellerPatterns(ctx context.Context, tenantID, connectorID string) (MarketplacePatternResult, error)
+	ListTransferEdges(ctx context.Context, tenantID, connectorID string) ([]MarketplaceTransferEdge, error)
+	UpsertTransferEdge(ctx context.Context, tenantID, connectorID string, e MarketplaceTransferEdge) (MarketplaceTransferEdge, error)
 	ListMerchantBooks(ctx context.Context, tenantID, connectorID string) ([]MerchantBookFact, error)
 	TryLockTenantRun(ctx context.Context, tenantID, connectorID string) (unlock func(), err error)
 	InsertReconciliationRun(ctx context.Context, run ReconciliationRun) (ReconciliationRun, error)
@@ -385,7 +387,7 @@ func (s *FinancialService) Investigate(ctx context.Context, tenantID, connectorI
 	var ok bool
 	var err error
 	if exceptionID != "" {
-		ex, ok, err = s.Store.GetReconciliationException(ctx, tenantID, connectorID, exceptionID)
+		ex, ok, err = s.GetException(ctx, tenantID, connectorID, exceptionID)
 		if err != nil {
 			return InvestigationRecord{}, err
 		}
@@ -393,7 +395,7 @@ func (s *FinancialService) Investigate(ctx context.Context, tenantID, connectorI
 			return InvestigationRecord{}, errNotFound
 		}
 	} else {
-		list, err := s.Store.ListReconciliationExceptions(ctx, tenantID, connectorID)
+		list, err := s.ListExceptions(ctx, tenantID, connectorID)
 		if err != nil {
 			return InvestigationRecord{}, err
 		}
@@ -526,7 +528,24 @@ func (s *FinancialService) CashSchedule(ctx context.Context, tenantID, connector
 	if err != nil {
 		return CashSchedule{}, err
 	}
-	return BuildCashSchedule(results, lines, payouts, s.now(), days), nil
+	refunds, err := s.Store.ListRefunds(ctx, tenantID, connectorID, "")
+	if err != nil {
+		return CashSchedule{}, err
+	}
+	books, err := s.Store.ListMerchantBooks(ctx, tenantID, connectorID)
+	if err != nil {
+		return CashSchedule{}, err
+	}
+	// Existing bank observations, scoped to tenant_id + connector_id (all accounts).
+	banks, err := s.Store.ListBankTxns(ctx, tenantID, connectorID, "")
+	if err != nil {
+		return CashSchedule{}, err
+	}
+	return BuildCashScheduleOpts(CashScheduleOpts{
+		Results: results, Lines: lines, Payouts: payouts,
+		Refunds: refunds, Books: books, Now: s.now(), Days: days,
+		BankLines: banks,
+	}), nil
 }
 
 func (s *FinancialService) Ledger(ctx context.Context, tenantID, connectorID, paymentID string) (Ledger, error) {
@@ -567,6 +586,51 @@ func (s *FinancialService) MarketplaceSellerPatterns(ctx context.Context, tenant
 		return MarketplacePatternResult{}, errors.New("tenant_id and connector_id are required")
 	}
 	return s.Store.ListMarketplaceSellerPatterns(ctx, tenantID, connectorID)
+}
+
+// MarketplaceRefundGraphExceptions returns ops counsel signals for marketplace
+// refunds lacking a reverse_transfer edge. Advisory/not-cash; never writes MATCHED
+// or invents a recon verdict enum.
+func (s *FinancialService) MarketplaceRefundGraphExceptions(ctx context.Context, tenantID, connectorID string) (MarketplaceRefundGraphResult, error) {
+	tenantID = strings.TrimSpace(tenantID)
+	connectorID = strings.TrimSpace(connectorID)
+	if tenantID == "" || connectorID == "" {
+		return MarketplaceRefundGraphResult{}, errors.New("tenant_id and connector_id are required")
+	}
+	// Same source as the refund_without_reverse_transfer rows in ListExceptions.
+	signals, err := s.refundGraphSignals(ctx, tenantID, connectorID)
+	if err != nil {
+		return MarketplaceRefundGraphResult{}, err
+	}
+	if signals == nil {
+		signals = []MarketplaceRefundGraphSignal{}
+	}
+	return MarketplaceRefundGraphResult{
+		TenantID: tenantID, ConnectorID: connectorID,
+		Signals: signals, NotCash: true, Advisory: true,
+	}, nil
+}
+
+// MarketplaceVelocityFlags evaluates seller-pattern thresholds into ops flags
+// + audit. HoldRecommended only when cfg.HoldEnabled; AutoBlockPayout never set.
+func (s *FinancialService) MarketplaceVelocityFlags(ctx context.Context, tenantID, connectorID string, cfg MarketplaceVelocityConfig) (MarketplaceVelocityResult, error) {
+	tenantID = strings.TrimSpace(tenantID)
+	connectorID = strings.TrimSpace(connectorID)
+	if tenantID == "" || connectorID == "" {
+		return MarketplaceVelocityResult{}, errors.New("tenant_id and connector_id are required")
+	}
+	patterns, err := s.Store.ListMarketplaceSellerPatterns(ctx, tenantID, connectorID)
+	if err != nil {
+		return MarketplaceVelocityResult{}, err
+	}
+	flags := EvaluateMarketplaceVelocity(patterns.Sellers, cfg)
+	if flags == nil {
+		flags = []MarketplaceVelocityFlag{}
+	}
+	return MarketplaceVelocityResult{
+		TenantID: tenantID, ConnectorID: connectorID,
+		Flags: flags, NotCash: true, Advisory: true,
+	}, nil
 }
 
 func refundsFor(all []RefundFact, paymentID string) []RefundFact {

@@ -49,6 +49,17 @@ type WebhookMetadata struct {
 	FeeMinor          int64
 	TaxMinor          int64
 	ProviderCreatedAt *time.Time
+	// Route (marketplace) references. Set only from Razorpay-supplied fields on
+	// transfer / reversal entities; empty otherwise. Never invented.
+	// TransferID: forward transfer id (trf_…) — the entity id on a transfer
+	// entity, or the parent transfer_id on a reversal entity.
+	TransferID string
+	// ReverseTransferID: reversal id (rvrsl_…) on a reversal entity.
+	ReverseTransferID string
+	// PaymentID: transfer.source when it is a payment id (pay_…).
+	PaymentID string
+	// SellerID: Linked Account id from transfer.recipient, else transfer.account.
+	SellerID string
 }
 
 // ReceiptResult is the outcome of processing a webhook receipt.

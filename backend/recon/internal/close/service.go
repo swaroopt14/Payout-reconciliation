@@ -39,7 +39,14 @@ func (s *Service) Run(ctx context.Context, req RunRequest) (Report, error) {
 	if err != nil {
 		return Report{}, err
 	}
-	exceptions, err := s.FinStore.ListReconciliationExceptions(ctx, req.TenantID, req.ConnectorID)
+	// persisted drives cash position (unchanged); exceptions is the full
+	// exceptions list incl. derived refund_without_reverse_transfer rows
+	// (VarianceAmount=0, never cash).
+	persisted, err := s.FinStore.ListReconciliationExceptions(ctx, req.TenantID, req.ConnectorID)
+	if err != nil {
+		return Report{}, err
+	}
+	exceptions, err := s.Financial.ListExceptions(ctx, req.TenantID, req.ConnectorID)
 	if err != nil {
 		return Report{}, err
 	}
@@ -64,7 +71,7 @@ func (s *Service) Run(ctx context.Context, req RunRequest) (Report, error) {
 
 	truth, _ := s.Store.ListGroundTruth(ctx, req.TenantID, req.ConnectorID, req.BatchID)
 	acc := ComputeAccuracy(truth, results)
-	cash := recon.CashPosition(results, lines, exceptions)
+	cash := recon.CashPosition(results, lines, persisted)
 
 	matchRate := 0.0
 	if summary.ScoredCount > 0 {

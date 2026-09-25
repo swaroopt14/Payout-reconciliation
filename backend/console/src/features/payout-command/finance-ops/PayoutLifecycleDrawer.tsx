@@ -6,6 +6,7 @@ import { CopyIdButton, DrawerCloseButton, StatusBadge } from './razorpayChrome'
 import { PayoutLifecycleView } from './PayoutLifecycleView'
 import { buildPayoutLifecycle } from './payoutLifecycleModel'
 import type { PayoutReconDisplayRow } from './payoutReconCopy'
+import { isPendingSellerReverseTransfer } from './payoutReconCopy'
 import { ErrorInvestigationPanel } from './ErrorInvestigationPanel'
 import { buildRazorpayXError } from './razorpayXErrors'
 import { payoutStatusTone, type RazorpayPayoutStatus } from './razorpayPayoutStatus'
@@ -107,7 +108,7 @@ export function PayoutLifecycleDrawer({
               nextSteps: row.nextSteps,
               payoutId: row.payoutId,
             })}
-            financialImpactMinor={row.varianceMinor || row.amountMinor}
+            financialImpactMinor={isPendingSellerReverseTransfer(row) ? 0 : row.varianceMinor || row.amountMinor}
             hasRun={hasRun}
             autoStart
             onInvestigate={onInvestigate}

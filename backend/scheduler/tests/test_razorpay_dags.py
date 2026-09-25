@@ -15,7 +15,9 @@ class TestRazorpayDags(unittest.TestCase):
             "dags/razorpay_payment_backfill_dag.py",
             "dags/razorpay_settlement_backfill_dag.py",
             "dags/reconciliation_freshness_dag.py",
+            "dags/signal_recon_dag.py",
             "plugins/operators/zord_backfill_operator.py",
+            "plugins/operators/signal_operator.py",
         ]
         for rel in files:
             body = self._read(rel)
@@ -29,6 +31,7 @@ class TestRazorpayDags(unittest.TestCase):
         self.assertIn("/internal/backfill/settlements", body)
         self.assertIn("/internal/freshness/{job_id}", body)
         self.assertIn("/internal/recon/run", body)
+        self.assertIn("/internal/reconciliation/run", body)
         self.assertIn("zord_outcome_engine_http", body)
 
     def test_freshness_dag_runs_recon_after_backfill(self):

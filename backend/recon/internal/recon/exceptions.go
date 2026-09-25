@@ -136,6 +136,9 @@ func DeterministicInvestigation(ex ReconciliationException) InvestigationRecord 
 	case "payout_reversed_unexplained":
 		rec.RootCause = "Payout is reversed and the corresponding bank story is incomplete."
 		rec.Recommendation = "REQUEST_REVIEW of reversal and bank movement."
+	case ReasonRefundWithoutReverse:
+		rec.RootCause = "Marketplace refund with seller_id has no matching reverse_transfer for the same payment_id + seller_id (or refund_id). Not a bank movement; cash totals are unchanged."
+		rec.Recommendation = "REQUEST_REVIEW: confirm whether the seller transfer should be reversed or the reverse transfer is not yet ingested. Do not auto-block payouts."
 	default:
 		rec.RootCause = ex.Reason
 		rec.Recommendation = "Review evidence_refs. Do not change the Razorpay status."

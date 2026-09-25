@@ -21,11 +21,17 @@ import {
 import {
   exceptionSeverity,
   formatPaise,
+  PENDING_REVERSE_TRANSFER_EXPLANATION,
+  PENDING_REVERSE_TRANSFER_TONE_CLASS,
   reasonTitle,
   reconLabel,
   type ExceptionSeverity,
 } from './reasonCopy'
-import { mapFinanceRowToPayoutRecon, sumPayoutKpis } from './payoutReconCopy'
+import {
+  isPendingSellerReverseTransfer,
+  mapFinanceRowToPayoutRecon,
+  sumPayoutKpis,
+} from './payoutReconCopy'
 
 type FilterId = 'all' | 'high' | 'payment' | 'settlement' | 'payout' | 'bank'
 
@@ -129,6 +135,8 @@ export function ExceptionsSurface() {
   }, [exceptions, filter, search])
 
   const highCount = exceptions.filter((ex) => exceptionSeverity(ex) === 'HIGH').length
+  // Refund issued, seller reverse transfer not yet recorded — listed, but never counted as cash exposure.
+  const pendingReverseCount = exceptions.filter((ex) => isPendingSellerReverseTransfer(ex)).length
   const processedCount = kpis.processedCount || summary?.payout_kpis?.processed_count || summary?.matched_count || 0
   const scored = kpis.scoredCount || summary?.scored_count || 0
 
@@ -166,6 +174,9 @@ export function ExceptionsSurface() {
         <p className={`mt-1 ${RZ_MUTED}`}>
           Finance operations inbox. Razorpay status stays unchanged — reconciliation is separate.
           {exceptions.length ? ` ${exceptions.length} open exceptions.` : ''}
+          {pendingReverseCount
+            ? ` ${pendingReverseCount} seller reverse transfer${pendingReverseCount === 1 ? '' : 's'} pending (not a cash gap, excluded from totals).`
+            : ''}
         </p>
 
         <div className="mt-5 space-y-3">
@@ -264,6 +275,7 @@ export function ExceptionsSurface() {
                     {visible.map((ex) => {
                       const sev = exceptionSeverity(ex)
                       const selected = openId === ex.entity_id
+                      const pendingReverse = isPendingSellerReverseTransfer(ex)
                       return (
                         <tr
                           key={ex.id}
@@ -275,9 +287,20 @@ export function ExceptionsSurface() {
                           <td className="px-4 py-3 font-mono text-[12px] text-[#1A1A1A]">{ex.id}</td>
                           <td className="px-4 py-3 font-mono text-[12px] text-[#334155]">{ex.entity_id}</td>
                           <td className="px-4 py-3 capitalize text-[#6B6B6B]">{ex.entity_type}</td>
-                          <td className="max-w-[240px] px-4 py-3 text-[#334155]">{reasonTitle(ex.reason)}</td>
+                          <td className="max-w-[240px] px-4 py-3 text-[#334155]">
+                            {reasonTitle(ex.reason)}
+                            {pendingReverse ? (
+                              <p className={`mt-0.5 ${RZ_MUTED}`}>{PENDING_REVERSE_TRANSFER_EXPLANATION}</p>
+                            ) : null}
+                          </td>
                           <td className="px-4 py-3 text-right font-medium tabular-nums text-[#1A1A1A]">
-                            {formatPaise(ex.variance_amount, 2)}
+                            {pendingReverse ? (
+                              <span className="text-[#64748B]" title="Not a cash gap — excluded from exposure totals">
+                                —
+                              </span>
+                            ) : (
+                              formatPaise(ex.variance_amount, 2)
+                            )}
                           </td>
                           <td className="px-4 py-3">
                             <span className="font-mono text-[11px] uppercase text-[#475569]">
@@ -286,13 +309,22 @@ export function ExceptionsSurface() {
                           </td>
                           <td className="px-4 py-3">
                             <span
-                              className={`inline-flex h-6 items-center rounded-[4px] px-2 text-[11px] font-semibold ${reconToneClass(ex.reconciliation_result)}`}
+                              className={`inline-flex h-6 items-center rounded-[4px] px-2 text-[11px] font-semibold ${
+                                pendingReverse
+                                  ? PENDING_REVERSE_TRANSFER_TONE_CLASS
+                                  : reconToneClass(ex.reconciliation_result)
+                              }`}
+                              title={pendingReverse ? PENDING_REVERSE_TRANSFER_EXPLANATION : undefined}
                             >
                               {reconLabel(ex.reconciliation_result)}
                             </span>
                           </td>
                           <td className="px-4 py-3">
-                            <StatusBadge tone={severityTone(sev)}>{sev.toLowerCase()}</StatusBadge>
+                            {pendingReverse ? (
+                              <span className="font-mono text-[11px] text-[#64748B]">info</span>
+                            ) : (
+                              <StatusBadge tone={severityTone(sev)}>{sev.toLowerCase()}</StatusBadge>
+                            )}
                           </td>
                         </tr>
                       )

@@ -55,6 +55,11 @@ func Plan(question string, inherit EntityRef) QueryPlan {
 	}
 
 	switch {
+	case p.Entity.ID == "" && (strings.Contains(s, "morning") || strings.Contains(s, "briefing") ||
+		strings.Contains(s, "ops counsel") || strings.Contains(s, "what should i do")):
+		p.Intent = IntentAggregate
+		p.RequiredSources = []string{"summary", "exception"}
+		p.Metrics = []string{"count", "exposure"}
 	case p.Entity.ID == "" && isKnowledge(s):
 		p.Intent = IntentKnowledge
 		p.RequiredSources = []string{"knowledge"}

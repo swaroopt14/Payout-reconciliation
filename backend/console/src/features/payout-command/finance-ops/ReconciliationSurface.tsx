@@ -22,7 +22,9 @@ import {
   UnderlineTabs,
 } from './razorpayChrome'
 import {
+  isBankProvenReconciled,
   isOpenReconResult,
+  isPendingSellerReverseTransfer,
   mapFinanceRowToPayoutRecon,
   matchesStatusTab,
   reasonsForStatusTab,
@@ -31,7 +33,12 @@ import {
   type PayoutReconDisplayRow,
   type ReconStatusTab,
 } from './payoutReconCopy'
-import { formatPaise } from './reasonCopy'
+import {
+  formatPaise,
+  PENDING_REVERSE_TRANSFER_EXPLANATION,
+  PENDING_REVERSE_TRANSFER_LABEL,
+  PENDING_REVERSE_TRANSFER_TONE_CLASS,
+} from './reasonCopy'
 import {
   payoutStatusTone,
   type RazorpayPayoutStatus,
@@ -131,16 +138,22 @@ export function ReconciliationSurface() {
   }, [mappedRows, tab, reasonFilter])
 
   const totals = useMemo(() => {
+    // sumPayoutKpis already drops pending seller reverse transfers (not a cash gap).
     const kpis = sumPayoutKpis(mappedRows)
+    const bankProven = mappedRows.filter((r) => isBankProvenReconciled(r) && !isPendingSellerReverseTransfer(r))
     return {
       amount: kpis.totalAmount,
       paymentCount: kpis.scoredCount || records,
-      matchedCount: kpis.processedCount,
+      // Provider processed — NOT bank cash / 3-way proven.
+      processedCount: kpis.processedCount,
       openCount: kpis.reviewCount,
       failedCount: kpis.failedCount,
-      matchedAmount: kpis.processedAmount,
+      processedAmount: kpis.processedAmount,
       openAmount: kpis.reviewAmount,
       failedAmount: kpis.failedAmount,
+      bankProvenCount: bankProven.length,
+      bankProvenAmount: bankProven.reduce((s, r) => s + (r.amountMinor || 0), 0),
+      pendingReverseCount: kpis.pendingReverseTransferCount,
     }
   }, [mappedRows, records])
 
@@ -228,16 +241,26 @@ export function ReconciliationSurface() {
           <HeroAmountCard
             label="Reconciling Amount"
             amount={formatPaise(totals.amount, 2)}
-            subtitle={`from ${totals.paymentCount.toLocaleString('en-IN')} payout rows`}
-            info="Sum of payout amounts in the current reconciliation result set."
+            subtitle={`from ${totals.paymentCount.toLocaleString('en-IN')} payout rows${
+              totals.pendingReverseCount
+                ? ` · ${totals.pendingReverseCount.toLocaleString('en-IN')} seller reverse transfer(s) pending, excluded`
+                : ''
+            }`}
+            info="Sum of payout amounts in the current reconciliation result set. Refunds awaiting a seller reverse transfer are not a cash gap and are excluded."
           />
-          <div className="grid gap-3 sm:grid-cols-3">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <MiniMetricCard
               label="Processed"
-              value={formatPaise(totals.matchedAmount, 2)}
-              subtitle={`${totals.matchedCount.toLocaleString('en-IN')} processed`}
+              value={formatPaise(totals.processedAmount, 2)}
+              subtitle={`${totals.processedCount.toLocaleString('en-IN')} processed`}
               info="Razorpay processed status — not 3-way bank proof"
               onClick={() => setTab('processed')}
+            />
+            <MiniMetricCard
+              label="Bank proven"
+              value={formatPaise(totals.bankProvenAmount, 2)}
+              subtitle={`${totals.bankProvenCount.toLocaleString('en-IN')} close MATCHED + bank proof`}
+              info="Green Reconciled only when close MATCHED and bank_credit_proven / 3-way bank MATCHED"
             />
             <MiniMetricCard
               label="Needs review"
@@ -365,8 +388,8 @@ export function ReconciliationSurface() {
                       <th className="px-4 py-3 font-semibold">Processor</th>
                       <th className="px-4 py-3 font-semibold">Provider</th>
                       <th className="px-4 py-3 font-semibold">Close</th>
-                      <th className="px-4 py-3 font-semibold">2-way</th>
-                      <th className="px-4 py-3 font-semibold">3-way</th>
+                      <th className="px-4 py-3 font-semibold">2-way (books/PSP)</th>
+                      <th className="px-4 py-3 font-semibold">3-way (bank cash)</th>
                       <th className="px-4 py-3 text-right font-semibold">Amount</th>
                       <th className="px-4 py-3 font-semibold">UTR</th>
                       <th className="px-4 py-3 font-semibold">Reason</th>
@@ -379,6 +402,7 @@ export function ReconciliationSurface() {
                       const busy = reconcilingId === row.payoutId
                       const details = row.statusDetails
                       const selected = openId === row.payoutId
+                      const pendingReverse = isPendingSellerReverseTransfer(row)
                       return (
                         <tr
                           key={row.payoutId}
@@ -402,11 +426,30 @@ export function ReconciliationSurface() {
                           </td>
                           <td className="px-4 py-3 align-top">
                             <span
-                              className={`inline-flex h-6 items-center rounded-[4px] px-2 text-[11px] font-semibold ${reconToneClass(String(row.result))}`}
+                              className={`inline-flex h-6 items-center rounded-[4px] px-2 text-[11px] font-semibold ${
+                                pendingReverse
+                                  ? PENDING_REVERSE_TRANSFER_TONE_CLASS
+                                  : isBankProvenReconciled(row)
+                                  ? reconToneClass('MATCHED')
+                                  : String(row.result).toUpperCase() === 'MATCHED'
+                                    ? 'bg-[#FFF6E5] text-[#B36B00]'
+                                    : reconToneClass(String(row.result))
+                              }`}
+                              title={
+                                pendingReverse
+                                  ? PENDING_REVERSE_TRANSFER_EXPLANATION
+                                  : isBankProvenReconciled(row)
+                                  ? 'Close MATCHED with bank proof'
+                                  : String(row.result).toUpperCase() === 'MATCHED'
+                                    ? 'Close MATCHED = books/PSP only — not bank cash'
+                                    : undefined
+                              }
                             >
                               {row.result || '—'}
                             </span>
-                            {Math.abs(row.varianceMinor) > 0 && String(row.result).toUpperCase() !== 'MATCHED' ? (
+                            {!pendingReverse &&
+                            Math.abs(row.varianceMinor) > 0 &&
+                            String(row.result).toUpperCase() !== 'MATCHED' ? (
                               <p className={`mt-1 tabular-nums ${RZ_MUTED}`}>
                                 {formatPaise(Math.abs(row.varianceMinor), 2)}
                               </p>
@@ -425,10 +468,19 @@ export function ReconciliationSurface() {
                             {row.utr && row.utr !== '—' ? row.utr : 'null'}
                           </td>
                           <td className="px-4 py-3 align-top">
-                            <p className="font-mono text-[12px] text-[#1A1A1A]">{details?.reason || row.errorCode}</p>
-                            <p className={`mt-0.5 max-w-[220px] ${RZ_MUTED}`}>
-                              {details?.description || row.errorDescription}
-                            </p>
+                            {pendingReverse ? (
+                              <>
+                                <p className="text-[12px] font-medium text-[#1A1A1A]">{PENDING_REVERSE_TRANSFER_LABEL}</p>
+                                <p className={`mt-0.5 max-w-[220px] ${RZ_MUTED}`}>{PENDING_REVERSE_TRANSFER_EXPLANATION}</p>
+                              </>
+                            ) : (
+                              <>
+                                <p className="font-mono text-[12px] text-[#1A1A1A]">{details?.reason || row.errorCode}</p>
+                                <p className={`mt-0.5 max-w-[220px] ${RZ_MUTED}`}>
+                                  {details?.description || row.errorDescription}
+                                </p>
+                              </>
+                            )}
                           </td>
                           <td className="px-4 py-3 align-top">
                             <span className="rounded-[4px] bg-[#F3F4F6] px-2 py-1 font-mono text-[11px] text-[#475569]">
@@ -446,8 +498,12 @@ export function ReconciliationSurface() {
                               >
                                 Trace →
                               </button>
-                              {String(row.result).toUpperCase() === 'MATCHED' ? (
+                              {isBankProvenReconciled(row) ? (
                                 <span className="text-[12px] font-medium text-[#15803D]">Reconciled</span>
+                              ) : String(row.result).toUpperCase() === 'MATCHED' ? (
+                                <span className="text-[12px] font-medium text-[#B36B00]" title="Books/PSP matched — bank cash not proven">
+                                  Books/PSP matched
+                                </span>
                               ) : (
                                 <button
                                   type="button"

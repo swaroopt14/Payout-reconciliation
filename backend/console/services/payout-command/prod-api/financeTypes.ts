@@ -17,12 +17,27 @@ export type FinanceException = {
   provider_status?: string
   reconciliation_result: FinanceReconResult
   reason: string
+  /** Some payloads carry the recon reason under reason_code; treated the same as `reason`. */
+  reason_code?: string
   expected_amount: number
   observed_amount: number
   variance_amount: number
   confidence: number
   evidence_ids?: string[]
+  /** zord-recon evidence refs (e.g. refund / payment / seller sources on refund-graph rows). */
+  evidence_refs?: FinanceExceptionEvidenceRefs
   created_at?: string
+}
+
+export type FinanceEvidenceSourceRef = {
+  kind: string
+  id?: string
+  amount_minor?: number
+}
+
+export type FinanceExceptionEvidenceRefs = {
+  sources?: FinanceEvidenceSourceRef[]
+  [key: string]: unknown
 }
 
 export type FinancePayoutKpis = {
@@ -93,6 +108,7 @@ export type FinanceCashSchedule = {
 export type FinanceReconLeg = {
   result: FinanceReconResult
   reason: string
+  reason_code?: string
   confidence?: number
 }
 
@@ -100,6 +116,7 @@ export type FinanceReconLeg = {
 export type FinanceReconOverlay = {
   result: FinanceReconResult
   reason: string
+  reason_code?: string
   expected_amount: number
   observed_amount: number
   variance_amount: number
@@ -109,6 +126,8 @@ export type FinanceReconOverlay = {
   rail?: string
   two_way?: FinanceReconLeg
   three_way?: FinanceReconLeg
+  /** Marketplace seller; empty/missing → UI shows "unknown". */
+  seller_id?: string
 }
 
 export type FinanceObservation = {
@@ -291,6 +310,8 @@ export type FinanceReconRow = {
   result: FinanceReconResult
   variance_amount: number
   reason?: string
+  /** Some payloads carry the recon reason under reason_code; treated the same as `reason`. */
+  reason_code?: string
   /** Razorpay payout lifecycle status when known. */
   status?: string
   utr?: string | null
@@ -328,6 +349,10 @@ export type FinanceReconRow = {
   rail?: string
   two_way?: FinanceReconLeg
   three_way?: FinanceReconLeg
+  /** Same truth as `bank`; present on some detail payloads. */
+  bank_credit_proven?: boolean
+  /** Marketplace seller; empty → UI shows "unknown". */
+  seller_id?: string
 }
 
 export type FinanceEvaluation = {

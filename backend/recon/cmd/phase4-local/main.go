@@ -15,6 +15,7 @@ import (
 	"zord-outcome-engine/internal/observe"
 	"zord-outcome-engine/internal/persistence"
 	"zord-outcome-engine/internal/poll/providers/razorpay"
+	"zord-outcome-engine/models"
 	"zord-outcome-engine/routes"
 
 	"github.com/gin-gonic/gin"
@@ -114,7 +115,7 @@ func envelope(tenant, connector, paymentID, eventID, eventType, status string, c
 	created := time.Now().UTC()
 	return observe.Envelope{
 		EventName:          observe.EventObservationReceived,
-		SchemaVersion:      "v1",
+		SchemaVersion:      models.SchemaVersionV1,
 		TenantID:           tenant,
 		ConnectorID:        connector,
 		Provider:           "razorpay",

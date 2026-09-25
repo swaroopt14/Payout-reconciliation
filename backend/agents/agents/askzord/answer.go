@@ -3,6 +3,8 @@ package askzord
 import (
 	"fmt"
 	"strings"
+
+	"zord-prompt-layer/agents/briefing"
 )
 
 func BuildAnswer(ctx FinanceContext) Response {
@@ -69,7 +71,46 @@ func BuildAnswer(ctx FinanceContext) Response {
 		resp.Answer = cleaned
 		resp.Limitations = append(resp.Limitations, extra...)
 	}
+	resp.HumanNextStep = humanNextStepFromContext(ctx)
 	return resp
+}
+
+func humanNextStepFromContext(ctx FinanceContext) string {
+	in := briefing.OpsInputs{
+		Close: briefing.Report{
+			Exceptions:              int(factInt(ctx, "count_unresolved") + factInt(ctx, "count_ambiguous") + factInt(ctx, "count_conflicted") + factInt(ctx, "count_variance") + factInt(ctx, "count_orphan")),
+			UnresolvedExposureMinor: factInt(ctx, "exposure_minor"),
+			Matched:                 int(factInt(ctx, "matched_count")),
+			Records:                 int(factInt(ctx, "scored_count")),
+		},
+		ScheduleAvailable:       factString(ctx, "cash_schedule_kind") != "" || factPresent(ctx, "expected_credit_minor") || factPresent(ctx, "expected_debit_minor"),
+		CashScheduleKind:        factString(ctx, "cash_schedule_kind"),
+		NextDayCreditMinor:      factInt(ctx, "expected_credit_minor"),
+		NextDayDebitMinor:       factInt(ctx, "expected_debit_minor"),
+		RefundGraphAvailable:    factPresent(ctx, "refund_graph_signal_count"),
+		RefundGraphCount:        int(factInt(ctx, "refund_graph_signal_count")),
+		HasRefundWithoutReverse: factInt(ctx, "refund_without_reverse_count") > 0,
+		VelocityAvailable:       factPresent(ctx, "velocity_flag_count"),
+		VelocityFlagCount:       int(factInt(ctx, "velocity_flag_count")),
+		HoldEnabledOnFetch:      factInt(ctx, "hold_enabled") == 1,
+		HoldRecommendedCount:    int(factInt(ctx, "hold_recommended_count")),
+	}
+	if in.Close.Exceptions == 0 && in.Close.Records > in.Close.Matched {
+		in.Close.Exceptions = in.Close.Records - in.Close.Matched
+	}
+	if in.HasRefundWithoutReverse {
+		in.RefundGraphReasons = []string{briefing.ReasonRefundWithoutReverse}
+	}
+	return briefing.ChooseHumanNextStep(in)
+}
+
+func factPresent(ctx FinanceContext, field string) bool {
+	for _, f := range ctx.Facts {
+		if f.Field == field {
+			return true
+		}
+	}
+	return false
 }
 
 func recordAnswer(ctx FinanceContext) string {
@@ -133,7 +174,17 @@ func aggregateAnswer(ctx FinanceContext) string {
 		}
 	}
 	fmt.Fprintf(&b, "Unresolved financial exposure is %d (copied from exception variance_amount). ", factInt(ctx, "exposure_minor"))
-	b.WriteString("Settled is not bank credited. MATCHED is not fully reconciled. ")
+	if factPresent(ctx, "expected_credit_minor") || factPresent(ctx, "expected_debit_minor") {
+		fmt.Fprintf(&b, "Next banking-day "+briefing.ExpectedCashLabel+" credit %d and debit %d (schedule_projection, not bank credited). ",
+			factInt(ctx, "expected_credit_minor"), factInt(ctx, "expected_debit_minor"))
+	}
+	if factInt(ctx, "refund_without_reverse_count") > 0 {
+		fmt.Fprintf(&b, "refund_without_reverse_transfer signals: %d. ", factInt(ctx, "refund_without_reverse_count"))
+	}
+	if factInt(ctx, "hold_enabled") == 1 && factInt(ctx, "hold_recommended_count") > 0 {
+		fmt.Fprintf(&b, "HoldRecommended flags: %d (counsel only; no auto-block). ", factInt(ctx, "hold_recommended_count"))
+	}
+	b.WriteString("Settled is not bank credited. MATCHED is not fully reconciled. MATCHED is not cash. ")
 	return strings.TrimSpace(b.String())
 }
 
@@ -144,15 +195,31 @@ func cashPositionAnswer(ctx FinanceContext) string {
 	bank := factInt(ctx, "bank_credited_proven_minor")
 	inFlight := factInt(ctx, "in_flight_minor")
 	exposure := factInt(ctx, "unresolved_exposure_minor")
-	fmt.Fprintf(&b, "Captured payments total %d. Settlement expected net is %d. Bank credit proven is %d. ", gross, settled, bank)
+	fmt.Fprintf(&b, "Captured payments total %d. Settlement expected net ("+briefing.ExpectedCashLabel+") is %d. Bank credit proven is %d. ", gross, settled, bank)
 	if inFlight > 0 {
 		fmt.Fprintf(&b, "In-flight cash (settled but not bank-proven) is %d. ", inFlight)
 	}
 	fmt.Fprintf(&b, "Unresolved exposure is %d. ", exposure)
 	if kind := factString(ctx, "cash_schedule_kind"); kind != "" {
-		fmt.Fprintf(&b, "Forward cash is a %s, not a statistical forecast. ", kind)
+		fmt.Fprintf(&b, "Forward cash is a %s, "+briefing.ExpectedCashLabel+", not a statistical forecast. ", kind)
 	}
-	b.WriteString("Settled is not bank credited; only bank_credited_proven counts as cash received.")
+	if factPresent(ctx, "expected_credit_minor") || factPresent(ctx, "expected_debit_minor") {
+		fmt.Fprintf(&b, "Next banking-day "+briefing.ExpectedCashLabel+" credit %d and debit %d (copied from schedule days, not bank credited). ",
+			factInt(ctx, "expected_credit_minor"), factInt(ctx, "expected_debit_minor"))
+	}
+	if n := factInt(ctx, "refund_graph_signal_count"); factPresent(ctx, "refund_graph_signal_count") {
+		fmt.Fprintf(&b, "Refund-graph counsel signals: %d. ", n)
+	}
+	if factInt(ctx, "refund_without_reverse_count") > 0 {
+		fmt.Fprintf(&b, "refund_without_reverse_transfer count %d (counsel, not MATCHED). ", factInt(ctx, "refund_without_reverse_count"))
+	}
+	if factPresent(ctx, "velocity_flag_count") {
+		fmt.Fprintf(&b, "Velocity flags: %d. ", factInt(ctx, "velocity_flag_count"))
+		if factInt(ctx, "hold_enabled") == 1 {
+			fmt.Fprintf(&b, "HoldRecommended count %d (counsel only when HoldEnabled; no auto-block). ", factInt(ctx, "hold_recommended_count"))
+		}
+	}
+	b.WriteString("Settled is not bank credited; only bank_credited_proven counts as cash received. MATCHED is not cash.")
 	return strings.TrimSpace(b.String())
 }
 
