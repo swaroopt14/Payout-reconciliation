@@ -15,8 +15,12 @@ import type {
   FinanceReconRow,
 } from '@/services/payout-command/prod-api/financeTypes'
 import { InfoDot, RZ_CARD, RZ_MUTED, RZ_PAGE } from './razorpayChrome'
-import { formatPaise } from './reasonCopy'
-import { mapFinanceRowToPayoutRecon } from './payoutReconCopy'
+import { formatPaise, istCivilDate } from './reasonCopy'
+import {
+  isPendingSellerReverseTransfer,
+  mapFinanceRowToPayoutRecon,
+  withoutPendingReverseTransfers,
+} from './payoutReconCopy'
 
 type BottomTab = 'inflows' | 'outflows' | 'settlements' | 'payouts'
 
@@ -104,7 +108,13 @@ export function CashPositionSurface() {
     }
   }, [])
 
-  const payouts = useMemo(() => rows.map(mapFinanceRowToPayoutRecon), [rows])
+  // Refunds awaiting a seller reverse transfer are not a cash gap — keep them out of every cash figure.
+  const payouts = useMemo(() => withoutPendingReverseTransfers(rows.map(mapFinanceRowToPayoutRecon)), [rows])
+  const cashExceptions = useMemo(() => withoutPendingReverseTransfers(exceptions), [exceptions])
+  const pendingReverseCount = useMemo(
+    () => exceptions.filter((ex) => isPendingSellerReverseTransfer(ex)).length,
+    [exceptions],
+  )
   const committedOut = useMemo(
     () =>
       payouts
@@ -118,6 +128,7 @@ export function CashPositionSurface() {
   const expectedIn = cash?.in_flight_minor ?? 0
   const available = cash?.bank_credited_proven_minor ?? 0
   const unresolved = cash?.unresolved_exposure_minor ?? 0
+  const expectedRefundOutflow = (schedule?.days ?? []).reduce((sum, d) => sum + (d.expected_debit_minor || 0), 0)
   const projected =
     available +
     (schedule?.days ?? []).reduce((sum, d) => sum + (d.expected_credit_minor || 0) - (d.expected_debit_minor || 0), 0)
@@ -135,7 +146,7 @@ export function CashPositionSurface() {
           source: r.payoutId,
           count: 1,
           amountMinor: r.amountMinor,
-          date: r.createdAt ? new Date(r.createdAt * 1000).toLocaleDateString('en-IN') : '—',
+          date: r.createdAt ? istCivilDate(r.createdAt) : '—',
           description: r.mode || r.purpose || 'payout',
           status: r.status || '—',
         }))
@@ -148,9 +159,9 @@ export function CashPositionSurface() {
         source: 'Expected bank credit',
         count: d.count,
         amountMinor: d.expected_credit_minor,
-        date: d.date,
-        description: 'From cash schedule (settled, bank not yet proven)',
-        status: 'Expected',
+        date: istCivilDate(d.date),
+        description: 'Schedule projection only — not bank cash',
+        status: 'Expected (not proven)',
       }))
   }, [bottomTab, payouts, schedule])
 
@@ -163,7 +174,9 @@ export function CashPositionSurface() {
               <h1 className="text-[22px] font-semibold tracking-[-0.02em] text-[#1A1A1A]">Cash Position</h1>
               <InfoDot label="Bank-proven cash, in-flight settlement net, and payout book from recon." />
             </div>
-            <p className={`mt-1 ${RZ_MUTED}`}>Proven bank credit vs derived settlement net and open payouts. No forecast.</p>
+            <p className={`mt-1 ${RZ_MUTED}`}>
+              Proven bank credit vs derived settlement net and open payouts. Schedule credits/debits are projections — not bank cash.
+            </p>
           </div>
         </div>
 
@@ -173,14 +186,17 @@ export function CashPositionSurface() {
           <p className="mt-8 text-[13px] text-[#B91C1C]">{error}</p>
         ) : (
           <>
-            <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
-              <KpiCard label="Available Cash" value={formatPaise(available, 2)} hint="Bank credited, proven" />
-              <KpiCard label="Expected Incoming" value={formatPaise(expectedIn, 2)} hint="Settled, not yet proven at bank" />
-              <KpiCard label="Committed Outflows" value={formatPaise(committedOut, 2)} hint="Open payouts in the book" />
+            <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+              <KpiCard label="Available Cash" value={formatPaise(available, 2)} hint="Bank credited, proven only" />
+              <KpiCard label="Expected Incoming" value={formatPaise(expectedIn, 2)} hint="Settled / in-flight — not bank cash" />
+              <KpiCard label="Committed Outflows" value={formatPaise(committedOut, 2)} hint="Open payouts in the book (not proven bank debits)" />
+              <KpiCard label="Expected refund/payout outflows" value={formatPaise(expectedRefundOutflow, 2)} hint="Schedule debit projections — separate from proven bank debits" />
               <KpiCard
                 label="Unresolved Exposure"
                 value={formatPaise(unresolved, 2)}
-                hint={`${exceptions.length} exceptions`}
+                hint={`${cashExceptions.length} exceptions${
+                  pendingReverseCount ? ` · ${pendingReverseCount} seller reverse transfer(s) pending (not cash)` : ''
+                }`}
                 warn
                 onClick={() => router.push('/exceptions')}
               />
@@ -194,13 +210,16 @@ export function CashPositionSurface() {
             <div className="mt-4 grid gap-4 lg:grid-cols-[1.4fr_1fr]">
               <section className={`${RZ_CARD} px-5 py-4`}>
                 <h2 className="text-[15px] font-semibold text-[#1A1A1A]">Cash schedule</h2>
+                <p className={`mt-1 ${RZ_MUTED}`}>
+                  + expected credits (settlement projections) · − expected refund/payout outflows — never proven bank movement.
+                </p>
                 {schedule?.days?.length ? (
                   <ul className="mt-3 space-y-2 text-[13px]">
                     {schedule.days.map((d) => (
                       <li key={d.date} className="flex items-center justify-between border-b border-[#F1F5F9] py-2">
-                        <span className="text-[#6B6B6B]">{d.date}</span>
+                        <span className="text-[#6B6B6B]">{istCivilDate(d.date)}</span>
                         <span className="tabular-nums text-[#1A1A1A]">
-                          +{formatPaise(d.expected_credit_minor, 2)} · −{formatPaise(d.expected_debit_minor, 2)}
+                          +{formatPaise(d.expected_credit_minor, 2)} expected · −{formatPaise(d.expected_debit_minor, 2)} expected outflow
                         </span>
                       </li>
                     ))}
@@ -208,6 +227,9 @@ export function CashPositionSurface() {
                 ) : (
                   <p className={`mt-3 ${RZ_MUTED}`}>No dated settlement window on this connector.</p>
                 )}
+                {schedule?.as_of ? (
+                  <p className={`mt-3 ${RZ_MUTED}`}>As of {istCivilDate(schedule.as_of)} IST</p>
+                ) : null}
                 {schedule?.limitations?.[0] ? <p className={`mt-3 ${RZ_MUTED}`}>{schedule.limitations[0]}</p> : null}
               </section>
 

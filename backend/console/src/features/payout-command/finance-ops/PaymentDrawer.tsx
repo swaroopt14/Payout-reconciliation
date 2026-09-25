@@ -16,7 +16,22 @@ import type {
   FinanceRefund,
   FinanceSettlementLine,
 } from '@/services/payout-command/prod-api/financeTypes'
-import { formatPaise, reconLabel, reasonTitle } from './reasonCopy'
+import {
+  formatPaise,
+  PENDING_REVERSE_TRANSFER_EXPLANATION,
+  PENDING_REVERSE_TRANSFER_LABEL,
+  PENDING_REVERSE_TRANSFER_TONE_CLASS,
+  reconLabel,
+  reasonTitle,
+} from './reasonCopy'
+import {
+  displaySellerId,
+  exceptionLinkedPaymentId,
+  exceptionSellerId,
+  isBankCreditProven,
+  isBankProvenReconciled,
+  isPendingSellerReverseTransfer,
+} from './payoutReconCopy'
 import { ErrorInvestigationPanel } from './ErrorInvestigationPanel'
 import { buildRazorpayXError } from './razorpayXErrors'
 import { FinanceTimelineLadder, useFinanceTimeline } from './FinanceTimelineLadder'
@@ -70,6 +85,7 @@ function drawerTitle(entityType?: string) {
   if (t === 'payment') return 'Payment Details'
   if (t === 'settlement') return 'Settlement Details'
   if (t === 'bank') return 'Bank credit'
+  if (t === 'refund') return 'Refund Details'
   return 'Payout Details'
 }
 
@@ -106,6 +122,14 @@ export function PaymentDrawer({
     setPayout(null)
 
     async function load() {
+      // Refund-graph exceptions key on refund_id — there is no payout/payment record under that id.
+      // Render from the exception itself instead of showing a spurious "could not load" error.
+      if (String(exception?.entity_type || '').toLowerCase() === 'refund') {
+        setRefunds([])
+        setSettlements([])
+        setLoading(false)
+        return
+      }
       const preferPayout = exception?.entity_type === 'payout' || entityId.startsWith('pout_')
       const first = preferPayout ? await getFinancePayout(entityId) : await getFinancePayment(entityId)
       if (cancelled) return
@@ -161,6 +185,9 @@ export function PaymentDrawer({
   }, [entityId, exception?.id, exceptionId])
 
   const recon = payout?.reconciliation || payment?.reconciliation
+  // Refund issued, seller reverse transfer not yet recorded — informational, never a variance/shortfall.
+  const pendingReverse = isPendingSellerReverseTransfer(exception) || isPendingSellerReverseTransfer(recon)
+  const isRefundEntity = String(exception?.entity_type || '').toLowerCase() === 'refund'
   const amountMinor =
     payout?.amount_minor ??
     payment?.amount_minor ??
@@ -208,7 +235,7 @@ export function PaymentDrawer({
 
       <div className="flex items-end justify-between gap-3 px-5 pt-5">
         <div>
-          <p className="text-[11px] font-medium text-[#8F8F8F]">Amount</p>
+          <p className="text-[11px] font-medium text-[#8F8F8F]">{pendingReverse ? 'Refund amount' : 'Amount'}</p>
           <p className="mt-1 text-[28px] font-semibold leading-none tracking-[-0.03em] tabular-nums text-[#1A1A1A]">
             {loading ? '—' : formatPaise(amountMinor, 2)}
           </p>
@@ -232,8 +259,28 @@ export function PaymentDrawer({
 
         {tab === 'details' ? (
           <div className="space-y-5">
+            {pendingReverse ? (
+              <div
+                className="rounded-[8px] border border-[#DCE7FB] bg-[#F5F8FF] px-4 py-3"
+                role="note"
+                aria-label={PENDING_REVERSE_TRANSFER_LABEL}
+              >
+                <span
+                  className={`inline-flex h-6 items-center rounded-[4px] px-2 text-[11px] font-semibold ${PENDING_REVERSE_TRANSFER_TONE_CLASS}`}
+                >
+                  {PENDING_REVERSE_TRANSFER_LABEL}
+                </span>
+                <p className="mt-2 text-[13px] leading-snug text-[#334155]">{PENDING_REVERSE_TRANSFER_EXPLANATION}</p>
+                <p className="mt-1 text-[12px] text-[#64748B]">
+                  The refund amount below is informational. It is not a variance and is excluded from cash totals.
+                </p>
+              </div>
+            ) : null}
             <dl>
-              <DrawerField label={payout ? 'Payout ID' : payment ? 'Payment ID' : 'Entity ID'} mono>
+              <DrawerField
+                label={payout ? 'Payout ID' : payment ? 'Payment ID' : isRefundEntity ? 'Refund ID' : 'Entity ID'}
+                mono
+              >
                 <span className="inline-flex items-center gap-1">
                   {displayId}
                   <CopyIdButton value={displayId} />
@@ -258,7 +305,23 @@ export function PaymentDrawer({
               <DrawerField label="Tax">
                 {settlementLine?.tax_minor != null ? formatPaise(settlementLine.tax_minor, 2) : '₹0.00'}
               </DrawerField>
-              {exception ? (
+              {exception && pendingReverse ? (
+                <>
+                  <DrawerField label="Reason">{PENDING_REVERSE_TRANSFER_LABEL}</DrawerField>
+                  <DrawerField label="Refund amount">{formatPaise(exception.expected_amount, 2)}</DrawerField>
+                  <DrawerField label="Cash impact">None — reverse transfer from seller not yet recorded</DrawerField>
+                  {exceptionLinkedPaymentId(exception) ? (
+                    <DrawerField label="Linked payment ID" mono>
+                      {exceptionLinkedPaymentId(exception)}
+                    </DrawerField>
+                  ) : null}
+                  {!recon ? (
+                    <DrawerField label="Seller ID" mono>
+                      {displaySellerId(exceptionSellerId(exception))}
+                    </DrawerField>
+                  ) : null}
+                </>
+              ) : exception ? (
                 <>
                   <DrawerField label="Expected">{formatPaise(exception.expected_amount, 2)}</DrawerField>
                   <DrawerField label="Observed">{formatPaise(exception.observed_amount, 2)}</DrawerField>
@@ -286,6 +349,29 @@ export function PaymentDrawer({
               ) : exception?.reconciliation_result ? (
                 <DrawerField label="Close result">{reconLabel(exception.reconciliation_result)}</DrawerField>
               ) : null}
+              {recon ? (
+                <DrawerField label="Bank cash">
+                  {isBankProvenReconciled({
+                    result: recon.result,
+                    bank_credit_proven: recon.bank_credit_proven,
+                    three_way: recon.three_way,
+                  })
+                    ? 'Proven — money in bank'
+                    : isBankCreditProven({
+                          bank_credit_proven: recon.bank_credit_proven,
+                          three_way: recon.three_way,
+                        })
+                      ? 'Bank leg proven (see 3-way)'
+                      : String(recon.result || '').toUpperCase() === 'MATCHED'
+                        ? 'Not proven — close MATCHED is books/PSP only'
+                        : 'Not proven'}
+                </DrawerField>
+              ) : null}
+              {recon ? (
+                <DrawerField label="Seller ID" mono>
+                  {displaySellerId(recon.seller_id || exceptionSellerId(exception))}
+                </DrawerField>
+              ) : null}
               {recon?.two_way ? (
                 <DrawerField label="2-way">
                   <ReconLegBadge label="Books vs PSP" leg={recon.two_way} />
@@ -298,6 +384,7 @@ export function PaymentDrawer({
               ) : null}
             </dl>
 
+            {pendingReverse ? null : (
             <ErrorInvestigationPanel
               errorView={errorView}
               financialImpactMinor={investigation?.financial_impact ?? exception?.variance_amount ?? amountMinor}
@@ -312,6 +399,7 @@ export function PaymentDrawer({
               compact
               view="status"
             />
+            )}
           </div>
         ) : timelineLoading ? (
           <p className="text-[13px] text-[#94A3B8]">Loading captured timeline…</p>

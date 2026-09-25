@@ -1,6 +1,7 @@
 package recon
 
 import (
+	"strings"
 	"time"
 
 	"zord-outcome-engine/internal/poll/providers/razorpay"
@@ -66,10 +67,10 @@ func nzCur(s string) string {
 }
 
 type ScheduleDay struct {
-	Date                 string `json:"date"`
-	ExpectedCreditMinor  int64  `json:"expected_credit_minor"`
-	ExpectedDebitMinor   int64  `json:"expected_debit_minor"`
-	Count                int    `json:"count"`
+	Date                string `json:"date"`
+	ExpectedCreditMinor int64  `json:"expected_credit_minor"`
+	ExpectedDebitMinor  int64  `json:"expected_debit_minor"`
+	Count               int    `json:"count"`
 }
 
 type CashSchedule struct {
@@ -82,29 +83,91 @@ type CashSchedule struct {
 	Limitations          []string      `json:"limitations"`
 }
 
+// CashScheduleOpts extends BuildCashSchedule with merchant DueAt credits,
+// refund debits, and an injectable banking calendar. Kind stays
+// schedule_projection — this path never sets MATCHED and never treats
+// projections as BankCreditProven.
+type CashScheduleOpts struct {
+	Results  []FinancialResult
+	Lines    []SettlementLine
+	Payouts  []PayoutFact
+	Refunds  []RefundFact
+	Books    []MerchantBookFact
+	Now      time.Time
+	Days     int
+	Calendar *BankingCalendar
+	// BankLines are existing bank observations (ListBankTxns), already
+	// filtered by tenant_id + connector_id. When a matching bank debit has
+	// landed, the expected refund debit is dropped; when a matching bank
+	// credit has landed, the invoice DueAt credit is skipped. Nil/empty keeps
+	// prior behaviour. See cash_schedule_bank.go for the match key.
+	BankLines []BankTxn
+}
+
 func BuildCashSchedule(results []FinancialResult, lines []SettlementLine, payouts []PayoutFact, now time.Time, days int) CashSchedule {
+	return BuildCashScheduleOpts(CashScheduleOpts{
+		Results: results, Lines: lines, Payouts: payouts, Now: now, Days: days,
+	})
+}
+
+func BuildCashScheduleOpts(opts CashScheduleOpts) CashSchedule {
+	now := opts.Now
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
+	days := opts.Days
 	if days <= 0 {
 		days = 7
 	}
-	asOf := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	cal := DefaultBankingCalendar()
+	if opts.Calendar != nil {
+		cal = *opts.Calendar
+	}
+	asOf := cal.CivilDate(now)
 	out := CashSchedule{
 		AsOf:        asOf,
 		HorizonDays: days,
 		Kind:        "schedule_projection",
-		Limitations: []string{"Not a statistical forecast. Buckets observed settlement dates plus the 3-day bank window and payout SLA."},
+		Limitations: []string{
+			"Not a statistical forecast. Buckets observed settlement dates plus the 3-day bank window and payout SLA.",
+			"Expected credits and refund/payout debits roll to the next banking day (weekend + reference holidays).",
+			"Projection only: never MATCHED and never BankCreditProven.",
+		},
 	}
+	if len(opts.BankLines) > 0 {
+		out.Limitations = append(out.Limitations,
+			"Refund debits and invoice DueAt credits already landed at bank (reference, else amount+currency in window) are not projected.")
+	}
+	windowEnd := asOf.AddDate(0, 0, days)
 	byDate := map[string]*ScheduleDay{}
 	for i := 0; i < days; i++ {
 		d := asOf.AddDate(0, 0, i).Format("2006-01-02")
 		byDate[d] = &ScheduleDay{Date: d}
 		out.Days = append(out.Days, ScheduleDay{Date: d})
 	}
+
+	bucket := func(natural time.Time, credit, debit int64) {
+		if credit == 0 && debit == 0 {
+			return
+		}
+		day := cal.NextBankingDay(natural)
+		if day.Before(asOf) {
+			day = cal.NextBankingDay(asOf)
+		}
+		key := day.Format("2006-01-02")
+		slot, ok := byDate[key]
+		if !ok {
+			out.UnknownTimingMinor += credit + debit
+			return
+		}
+		slot.ExpectedCreditMinor += credit
+		slot.ExpectedDebitMinor += debit
+		slot.Count++
+	}
+
 	settledAt := map[string]time.Time{}
 	netByPay := map[string]int64{}
-	for _, l := range lines {
+	for _, l := range opts.Lines {
 		pid := l.PaymentID
 		if pid == "" {
 			pid = l.EntityID
@@ -116,12 +179,26 @@ func BuildCashSchedule(results []FinancialResult, lines []SettlementLine, payout
 			}
 		}
 	}
-	for _, r := range results {
+
+	// Payments already proven at bank: cash received, not a projection.
+	provenPay := map[string]bool{}
+	for _, r := range opts.Results {
 		if r.EntityType != EntityPayment {
 			continue
 		}
 		if r.BankCreditProven {
 			out.AlreadyReceivedMinor += r.ObservedAmount
+			provenPay[r.EntityID] = true
+		}
+	}
+
+	// In-flight settlement expected credits (prefer these over invoice DueAt).
+	creditedFromSettlement := map[string]bool{}
+	for _, r := range opts.Results {
+		if r.EntityType != EntityPayment {
+			continue
+		}
+		if provenPay[r.EntityID] {
 			continue
 		}
 		net := netByPay[r.EntityID]
@@ -133,28 +210,64 @@ func BuildCashSchedule(results []FinancialResult, lines []SettlementLine, payout
 			out.UnknownTimingMinor += net
 			continue
 		}
-		// expected bank credit: settled_at + 0..3d window, bucket the end of the window clipped to horizon
+		// expected bank credit: settled_at + 0..3d window, then roll to banking day
 		hit := when.Add(defaultDateWindow)
-		day := time.Date(hit.Year(), hit.Month(), hit.Day(), 0, 0, 0, 0, time.UTC)
-		if day.Before(asOf) {
-			day = asOf
-		}
-		key := day.Format("2006-01-02")
-		slot, ok := byDate[key]
-		if !ok {
-			out.UnknownTimingMinor += net
+		bucket(hit, net, 0)
+		creditedFromSettlement[r.EntityID] = true
+	}
+
+	// Invoice DueAt expected credits — skip when same payment already has
+	// in-flight settlement credit or bank-proven cash (no double-count).
+	// Then skip DueAt credits already bank-proven by a landed bank credit.
+	type dueItem struct {
+		ev    ExpectedCashEvent
+		claim scheduleBankClaim
+	}
+	var dues []dueItem
+	for i, ev := range ObligationsFromMerchant(opts.Books) {
+		if ev.Direction != DirectionInbound || ev.AmountMinor == 0 {
 			continue
 		}
-		slot.ExpectedCreditMinor += net
-		slot.Count++
+		if ev.EntityID != "" && (creditedFromSettlement[ev.EntityID] || provenPay[ev.EntityID]) {
+			continue
+		}
+		f := opts.Books[i] // ObligationsFromMerchant is 1:1 and order-preserving
+		c := scheduleBankClaim{
+			amount: ev.AmountMinor, currency: ev.Currency,
+			refs:   []string{f.InvoiceID, f.OrderID, f.PaymentID},
+			latest: windowEnd,
+		}
+		if !ev.DueAt.IsZero() {
+			// early payment allowed up to one horizon + bank window before due
+			c.earliest = ev.DueAt.AddDate(0, 0, -days).Add(-defaultDateWindow)
+		}
+		dues = append(dues, dueItem{ev: ev, claim: c})
 	}
+	var dueClaims []scheduleBankClaim
+	for _, d := range dues {
+		dueClaims = append(dueClaims, d.claim)
+	}
+	dueLanded := newScheduleBankPool(opts.BankLines, opts.Results, false).claimAll(dueClaims)
+	for di, d := range dues {
+		if dueLanded[di] {
+			continue
+		}
+		ev := d.ev
+		when := ev.DueAt
+		if when.IsZero() {
+			out.UnknownTimingMinor += ev.AmountMinor
+			continue
+		}
+		bucket(when, ev.AmountMinor, 0)
+	}
+
 	provenOut := map[string]bool{}
-	for _, r := range results {
+	for _, r := range opts.Results {
 		if r.EntityType == EntityPayout && r.BankCreditProven {
 			provenOut[r.EntityID] = true
 		}
 	}
-	for _, po := range payouts {
+	for _, po := range opts.Payouts {
 		st := razorpay.NormalizePayoutStatus(po.ProviderStatus)
 		if razorpay.IsPayoutFailedLike(st) {
 			continue
@@ -169,25 +282,108 @@ func BuildCashSchedule(results []FinancialResult, lines []SettlementLine, payout
 		if when.IsZero() {
 			when = now
 		}
-		day := time.Date(when.Year(), when.Month(), when.Day(), 0, 0, 0, 0, time.UTC)
-		if day.Before(asOf) {
-			day = asOf
+		bucket(when, 0, po.AmountMinor)
+	}
+
+	// Refund debits: settlement refund lines first; RefundFact only when that
+	// payment+amount pair is not already covered (observation + line = one outflow).
+	// Duplicate settlement refund lines (same line ID) count once. Failed /
+	// cancelled RefundFacts are excluded before bank matching, so they never
+	// project and never consume a bank debit. Candidates whose bank debit has
+	// landed are dropped (each bank line drops at most one refund).
+	type refundKey struct {
+		pay string
+		amt int64
+	}
+	type refundItem struct {
+		amt   int64
+		when  time.Time
+		claim scheduleBankClaim
+	}
+	var refunds []refundItem
+	addRefund := func(amt int64, when time.Time, cur string, refs ...string) {
+		c := scheduleBankClaim{amount: amt, currency: cur, refs: refs, latest: windowEnd}
+		if !when.IsZero() {
+			c.earliest = when.Add(-defaultDateWindow)
 		}
-		key := day.Format("2006-01-02")
-		slot, ok := byDate[key]
-		if !ok {
-			out.UnknownTimingMinor += po.AmountMinor
+		refunds = append(refunds, refundItem{amt: amt, when: when, claim: c})
+	}
+	coveredRefund := map[refundKey]bool{}
+	seenLine := map[string]bool{}
+	for _, l := range opts.Lines {
+		if !strings.EqualFold(l.LineType, "refund") {
 			continue
 		}
-		slot.ExpectedDebitMinor += po.AmountMinor
-		slot.Count++
+		if l.ID != "" {
+			if seenLine[l.ID] {
+				continue
+			}
+			seenLine[l.ID] = true
+		}
+		pid := l.PaymentID
+		if pid == "" {
+			pid = l.EntityID
+		}
+		amt := l.DebitMinor
+		if amt == 0 {
+			amt = l.AmountMinor
+		}
+		if amt < 0 {
+			amt = -amt
+		}
+		if amt == 0 {
+			continue
+		}
+		addRefund(amt, l.SettledAt, l.Currency, l.EntityID, pid)
+		coveredRefund[refundKey{pid, amt}] = true
 	}
+	for _, rf := range opts.Refunds {
+		if !refundCountsAsExpectedDebit(rf) {
+			continue
+		}
+		if rf.AmountMinor <= 0 {
+			continue
+		}
+		if coveredRefund[refundKey{rf.PaymentID, rf.AmountMinor}] {
+			continue
+		}
+		addRefund(rf.AmountMinor, rf.ObservedAt, rf.Currency, rf.RefundID, rf.PaymentID)
+		coveredRefund[refundKey{rf.PaymentID, rf.AmountMinor}] = true
+	}
+	var refundClaims []scheduleBankClaim
+	for _, r := range refunds {
+		refundClaims = append(refundClaims, r.claim)
+	}
+	refundLanded := newScheduleBankPool(opts.BankLines, opts.Results, true).claimAll(refundClaims)
+	for ri, r := range refunds {
+		if refundLanded[ri] {
+			continue
+		}
+		if r.when.IsZero() {
+			out.UnknownTimingMinor += r.amt
+			continue
+		}
+		bucket(r.when, 0, r.amt)
+	}
+
 	for i := range out.Days {
 		if s, ok := byDate[out.Days[i].Date]; ok {
 			out.Days[i] = *s
 		}
 	}
 	return out
+}
+
+// refundCountsAsExpectedDebit excludes failed/cancelled (no money movement).
+// processed/pending remain expected outflows until a bank debit proves them —
+// never treated as MATCHED or BankCreditProven here.
+func refundCountsAsExpectedDebit(r RefundFact) bool {
+	switch strings.ToLower(strings.TrimSpace(r.ProviderStatus)) {
+	case "failed", "cancelled", "canceled":
+		return false
+	default:
+		return true
+	}
 }
 
 type LedgerLine struct {

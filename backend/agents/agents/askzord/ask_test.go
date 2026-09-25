@@ -29,7 +29,31 @@ func fixtureServer(t *testing.T) *httptest.Server {
 		case strings.Contains(r.URL.Path, "/cash-schedule"):
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"kind": "schedule_projection", "horizon_days": 7, "unknown_timing_minor": 0,
-				"days": []any{},
+				"days": []any{
+					map[string]any{"date": "2026-09-25", "expected_credit_minor": float64(1500), "expected_debit_minor": float64(200), "count": 2},
+				},
+			})
+		case strings.Contains(r.URL.Path, "/marketplace/refund-graph-exceptions"):
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"tenant_id": "tenant-a", "connector_id": "conn", "not_cash": true, "advisory": true,
+				"signals": []any{
+					map[string]any{
+						"refund_id": "rf_1", "payment_id": "pay_rg", "seller_id": "sel_1",
+						"amount_minor": float64(500), "reason": "refund_without_reverse_transfer",
+					},
+				},
+			})
+		case strings.Contains(r.URL.Path, "/marketplace/velocity-flags"):
+			hold := r.URL.Query().Get("hold_enabled") == "true"
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"tenant_id": "tenant-a", "connector_id": "conn", "not_cash": true, "advisory": true,
+				"flags": []any{
+					map[string]any{
+						"seller_id": "sel_1", "refund_count": float64(5), "refund_sum_minor": float64(9000),
+						"reason": "velocity_count", "ops_flag": true, "hold_recommended": hold,
+						"auto_block_payout": false,
+					},
+				},
 			})
 		case strings.Contains(r.URL.Path, "/refunds"):
 			_ = json.NewEncoder(w).Encode(map[string]any{"refunds": []any{}, "error": "not_found", "source": "provider_refund_observations"})
@@ -228,7 +252,72 @@ func TestAskTaxBreakdown(t *testing.T) {
 	}
 }
 
+func TestAskMorningBriefingHumanNextStepRefundGraph(t *testing.T) {
+	srv := fixtureServer(t)
+	defer srv.Close()
+	c := tools.NewOutcomeClient(srv.URL, "")
+	resp := Ask(c, "tenant-a", "conn", "What is my morning briefing?", EntityRef{})
+	if resp.Intent != IntentAggregate {
+		t.Fatalf("intent=%s", resp.Intent)
+	}
+	if !strings.Contains(resp.HumanNextStep, "refund_without_reverse_transfer") {
+		t.Fatalf("next=%s", resp.HumanNextStep)
+	}
+	if !hasFact(resp, "expected_credit_minor", "1500") {
+		t.Fatalf("facts=%+v", resp.Facts)
+	}
+	if !hasFact(resp, "refund_without_reverse_count", "1") {
+		t.Fatalf("facts=%+v", resp.Facts)
+	}
+	if strings.Contains(strings.ToLower(resp.Answer), "we lost") {
+		t.Fatal(resp.Answer)
+	}
+}
+
+func TestAskOpsDoesNotInventHoldWhenDisabled(t *testing.T) {
+	srv := fixtureServer(t)
+	defer srv.Close()
+	c := tools.NewOutcomeClient(srv.URL, "")
+	resp := Ask(c, "tenant-a", "conn", "Show me the biggest unresolved issue.", EntityRef{})
+	if resp.Intent != IntentInvestigation {
+		t.Fatalf("%s", resp.Intent)
+	}
+	if hasFact(resp, "hold_recommended_count", "1") {
+		t.Fatalf("HoldRecommended must stay 0 when hold_enabled false: %+v", resp.Facts)
+	}
+	if !hasFact(resp, "hold_recommended_count", "0") && !hasFact(resp, "hold_enabled", "0") {
+		// hold_recommended_count should be present as 0
+		if !hasFact(resp, "hold_recommended_count", "0") {
+			t.Fatalf("facts=%+v", resp.Facts)
+		}
+	}
+	// refund graph still wins over exceptions for next step
+	if !strings.Contains(resp.HumanNextStep, "refund_without_reverse_transfer") {
+		t.Fatalf("next=%s", resp.HumanNextStep)
+	}
+}
+
+func TestAskCashScheduleCopiesDayMinors(t *testing.T) {
+	srv := fixtureServer(t)
+	defer srv.Close()
+	c := tools.NewOutcomeClient(srv.URL, "")
+	resp := Ask(c, "tenant-a", "conn", "What is the cash schedule for expected bank credits?", EntityRef{})
+	if resp.Intent != IntentCashPosition {
+		t.Fatalf("%s", resp.Intent)
+	}
+	if !strings.Contains(resp.Answer, "1500") || !strings.Contains(resp.Answer, "200") {
+		t.Fatal(resp.Answer)
+	}
+	if !strings.Contains(strings.ToLower(resp.Answer), "not bank credited") && !strings.Contains(resp.Answer, "schedule_projection") {
+		// cash answer must not treat projection as credited
+		if !strings.Contains(resp.Answer, "schedule_projection") && !strings.Contains(strings.ToLower(resp.Answer), "not a statistical") {
+			t.Fatal(resp.Answer)
+		}
+	}
+}
+
 func TestGoldenEval(t *testing.T) {
+
 	srv := fixtureServer(t)
 	defer srv.Close()
 	c := tools.NewOutcomeClient(srv.URL, "")

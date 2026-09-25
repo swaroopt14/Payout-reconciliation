@@ -1,4 +1,5 @@
 import type {
+  FinanceException,
   FinancePayment,
   FinancePayout,
   FinanceReconResult,
@@ -26,6 +27,8 @@ export type PayoutReconDisplayRow = {
   nextSteps: string
   result: FinanceReconResult
   reason: string
+  /** Raw recon reason / reason_code from the API (before Razorpay alias mapping). */
+  reasonCode?: string
   contact: string
   varianceMinor: number
   settlement: boolean | null
@@ -45,6 +48,8 @@ export type PayoutReconDisplayRow = {
   rail?: string
   twoWay?: FinanceReconRow['two_way']
   threeWay?: FinanceReconRow['three_way']
+  /** True when bank cash movement is proven (list `bank` or overlay `bank_credit_proven`). */
+  bankCreditProven?: boolean
 }
 
 /** Official Razorpay payout status_details.reason catalogue. */
@@ -427,6 +432,7 @@ export function mapFinanceRowToPayoutRecon(row: FinanceReconRow): PayoutReconDis
     nextSteps: nextSteps === 'NA' ? '' : nextSteps,
     result: row.result || '',
     reason: reasonKey || errorCode || row.reason || '',
+    reasonCode: row.reason_code || row.reason || undefined,
     contact: row.contact || '',
     varianceMinor: row.variance_amount || 0,
     settlement: row.settlement,
@@ -445,6 +451,7 @@ export function mapFinanceRowToPayoutRecon(row: FinanceReconRow): PayoutReconDis
     rail: row.rail,
     twoWay: row.two_way,
     threeWay: row.three_way,
+    bankCreditProven: row.bank_credit_proven === true || row.bank === true,
     statusDetails: details
       ? {
           description: details.description,
@@ -470,6 +477,7 @@ export function mapPayoutResponseToReconRow(payout: FinancePayout): FinanceRecon
     payout_id: payout.payout_id,
     settlement: null,
     bank: rec?.bank_credit_proven ?? null,
+    bank_credit_proven: rec?.bank_credit_proven,
     result: rec?.result || '',
     variance_amount: rec?.variance_amount ?? 0,
     reason: rec?.reason,
@@ -495,6 +503,7 @@ export function mapPaymentResponseToReconRow(payment: FinancePayment): FinanceRe
     payment_id: payment.payment_id,
     settlement: rec?.bank_credit_proven != null ? rec.bank_credit_proven : null,
     bank: rec?.bank_credit_proven ?? null,
+    bank_credit_proven: rec?.bank_credit_proven,
     result: rec?.result || '',
     variance_amount: rec?.variance_amount ?? 0,
     reason: rec?.reason,
@@ -510,6 +519,122 @@ export function mapPaymentResponseToReconRow(payment: FinancePayment): FinanceRe
   }
 }
 
+
+/** Bank cash is proven — list uses `bank`, overlays use `bank_credit_proven`. */
+export function isBankCreditProven(row: {
+  bankCreditProven?: boolean | null
+  bank?: boolean | null
+  bank_credit_proven?: boolean | null
+  threeWay?: { result?: string } | null
+  three_way?: { result?: string } | null
+}): boolean {
+  if (row.bankCreditProven === true) return true
+  if (row.bank_credit_proven === true) return true
+  if (row.bank === true) return true
+  const three = String(row.threeWay?.result || row.three_way?.result || '').toUpperCase()
+  // three_way MATCHED is only emitted when bank movement is proven (or agreed no-movement).
+  return three === 'MATCHED'
+}
+
+/**
+ * Green "Reconciled" / money-in-bank chrome.
+ * Close result MATCHED alone is books/PSP agreement — not bank cash.
+ */
+export function isBankProvenReconciled(row: {
+  result?: string | null
+  bankCreditProven?: boolean | null
+  bank?: boolean | null
+  bank_credit_proven?: boolean | null
+  threeWay?: { result?: string } | null
+  three_way?: { result?: string } | null
+}): boolean {
+  if (String(row.result || '').toUpperCase() !== 'MATCHED') return false
+  return isBankCreditProven(row)
+}
+
+/** Empty seller_id surfaces as "unknown" — never invent an id. */
+export function displaySellerId(sellerId?: string | null): string {
+  const s = String(sellerId ?? '').trim()
+  return s ? s : 'unknown'
+}
+
+/** zord-recon reason: refund issued, seller reverse transfer not yet recorded. */
+export const REASON_REFUND_WITHOUT_REVERSE_TRANSFER = 'refund_without_reverse_transfer'
+
+type ReasonLegProbe = { reason?: string | null; reason_code?: string | null } | null | undefined
+
+/** Any row shape that carries a recon reason (list row, exception, overlay, display row). */
+export type ReverseTransferProbe = {
+  reason?: string | null
+  reason_code?: string | null
+  reasonCode?: string | null
+  errorCode?: string | null
+  error_code?: string | null
+  result?: string | null
+  reconciliation_result?: string | null
+  two_way?: ReasonLegProbe
+  three_way?: ReasonLegProbe
+  twoWay?: ReasonLegProbe
+  threeWay?: ReasonLegProbe
+}
+
+function isReverseTransferReason(value?: string | null): boolean {
+  return String(value ?? '').trim().toLowerCase() === REASON_REFUND_WITHOUT_REVERSE_TRANSFER
+}
+
+/**
+ * Refund issued; marketplace reverse transfer from the seller not yet recorded.
+ * NOT a cash gap: never styled as variance/shortfall and excluded from every cash total.
+ * Matches reason / reason_code / two_way / three_way reasons case-insensitively.
+ * A MATCHED row is never pending.
+ */
+export function isPendingSellerReverseTransfer(row?: ReverseTransferProbe | null): boolean {
+  if (!row) return false
+  const result = String(row.result || row.reconciliation_result || '').trim().toUpperCase()
+  if (result === 'MATCHED') return false
+  return [
+    row.reason,
+    row.reason_code,
+    row.reasonCode,
+    row.errorCode,
+    row.error_code,
+    row.two_way?.reason,
+    row.two_way?.reason_code,
+    row.three_way?.reason,
+    row.three_way?.reason_code,
+    row.twoWay?.reason,
+    row.twoWay?.reason_code,
+    row.threeWay?.reason,
+    row.threeWay?.reason_code,
+  ].some(isReverseTransferReason)
+}
+
+/** Amount that may count toward cash / variance / exposure totals — 0 for pending seller reverse transfers. */
+export function cashCountableMinor(
+  row: ReverseTransferProbe | null | undefined,
+  amountMinor: number | null | undefined,
+): number {
+  if (isPendingSellerReverseTransfer(row)) return 0
+  return amountMinor || 0
+}
+
+/** Rows that belong in cash totals (drops pending seller reverse transfers). */
+export function withoutPendingReverseTransfers<T extends ReverseTransferProbe>(rows: T[]): T[] {
+  return rows.filter((r) => !isPendingSellerReverseTransfer(r))
+}
+
+/** Seller id from exception evidence_refs.sources (kind "seller"); undefined when absent. */
+export function exceptionSellerId(ex?: Pick<FinanceException, 'evidence_refs'> | null): string | undefined {
+  const hit = ex?.evidence_refs?.sources?.find((s) => String(s?.kind || '').toLowerCase() === 'seller')
+  return hit?.id
+}
+
+/** Linked payment id from exception evidence_refs.sources (kind "payment"). */
+export function exceptionLinkedPaymentId(ex?: Pick<FinanceException, 'evidence_refs'> | null): string | undefined {
+  const hit = ex?.evidence_refs?.sources?.find((s) => String(s?.kind || '').toLowerCase() === 'payment')
+  return hit?.id || undefined
+}
+
 export function isOpenReconResult(result: string): boolean {
   const r = result.toUpperCase()
   return r !== 'MATCHED'
@@ -523,6 +648,8 @@ export function payoutStatusBucket(status: string): 'processed' | 'review' | 'fa
 }
 
 export type DemoPayoutKpis = {
+  /** Informational only — pending seller reverse transfers are excluded from every amount/count below. */
+  pendingReverseTransferCount: number
   scoredCount: number
   totalAmount: number
   processedCount: number
@@ -533,9 +660,12 @@ export type DemoPayoutKpis = {
   failedAmount: number
 }
 
-export function sumPayoutKpis(rows: Array<{ status: string; amountMinor: number }>): DemoPayoutKpis {
+export function sumPayoutKpis(
+  rows: Array<{ status: string; amountMinor: number } & ReverseTransferProbe>,
+): DemoPayoutKpis {
   const out: DemoPayoutKpis = {
-    scoredCount: rows.length,
+    pendingReverseTransferCount: 0,
+    scoredCount: 0,
     totalAmount: 0,
     processedCount: 0,
     processedAmount: 0,
@@ -545,6 +675,12 @@ export function sumPayoutKpis(rows: Array<{ status: string; amountMinor: number 
     failedAmount: 0,
   }
   for (const row of rows) {
+    // Refund awaiting seller reverse transfer is not a cash gap — keep it out of every total.
+    if (isPendingSellerReverseTransfer(row)) {
+      out.pendingReverseTransferCount += 1
+      continue
+    }
+    out.scoredCount += 1
     const amt = row.amountMinor || 0
     out.totalAmount += amt
     const bucket = payoutStatusBucket(row.status)

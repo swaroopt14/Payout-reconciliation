@@ -10,6 +10,7 @@ BACKFILL_SETTLEMENTS_ENDPOINT = "/internal/backfill/settlements"
 BACKFILL_JOB_ENDPOINT = "/internal/backfill/jobs/{job_id}"
 FRESHNESS_ENDPOINT = "/internal/freshness/{job_id}"
 RECON_RUN_ENDPOINT = "/internal/recon/run"
+FINANCIAL_RECON_ENDPOINT = "/internal/reconciliation/run"  # signal / cash-schedule family
 
 
 def _headers():
@@ -101,6 +102,24 @@ def run_recon(**context):
     hook = HttpHook(method="POST", http_conn_id=ZORD_OUTCOME_ENGINE_CONN_ID)
     response = hook.run(
         endpoint=RECON_RUN_ENDPOINT,
+        data=json.dumps({
+            "tenant_id": tenant_id,
+            "connector_id": connector_id,
+            "account_id": account_id,
+        }),
+        headers=_headers(),
+    )
+    return response.json()
+
+
+def run_financial_recon(**context):
+    """POST /internal/reconciliation/run (tenant+connector). Used by signal path too."""
+    tenant_id = Variable.get("razorpay_tenant_id")
+    connector_id = Variable.get("razorpay_connector_id")
+    account_id = Variable.get("razorpay_bank_account_id", default="")
+    hook = HttpHook(method="POST", http_conn_id=ZORD_OUTCOME_ENGINE_CONN_ID)
+    response = hook.run(
+        endpoint=FINANCIAL_RECON_ENDPOINT,
         data=json.dumps({
             "tenant_id": tenant_id,
             "connector_id": connector_id,

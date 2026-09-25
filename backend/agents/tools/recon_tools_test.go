@@ -20,6 +20,7 @@ func TestToolNames(t *testing.T) {
 		GetEvidencePack: true, GetDecisionTrace: true, GetCalculationTrace: true,
 		GetAuditTrail: true, VerifyEvidenceTool: true, GetSourceSnapshot: true,
 		GetReconSummary: true, GetCashPosition: true, GetTaxBreakdown: true, GetCashSchedule: true,
+		GetMarketplaceRefundGraphExceptions: true, GetMarketplaceVelocityFlags: true,
 	}
 	if len(names) != len(want) {
 		t.Fatalf("%v", names)
@@ -74,4 +75,3 @@ func TestAnswerBankQuestionDoesNotInventCredit(t *testing.T) {
 		t.Fatalf("%s", ans)
 	}
 }
-

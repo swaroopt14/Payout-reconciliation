@@ -4,9 +4,9 @@ import { reconToneClass } from './payoutLifecycleModel'
 export function legReasonLabel(reason?: string) {
   switch (reason) {
     case 'merchant_psp_settled':
-      return 'Books agree with PSP settlement'
+      return 'Books agree with PSP settlement (not bank cash)'
     case 'merchant_psp_payout':
-      return 'PSP processed the payout'
+      return 'PSP processed the payout (not bank cash)'
     case 'merchant_psp_no_movement':
       return 'PSP and books agree no money moved'
     case 'merchant_psp_bank':

@@ -225,3 +225,111 @@ func MapRefundFact(item reconRefund) recon.RefundFact {
 		SellerID:       strings.TrimSpace(item.SellerID),
 	}
 }
+
+// isTransferEvent classifies by Razorpay entity type only ("transfer").
+// No transfer.* webhook event names are hardcoded: only doc-confirmed Route
+// fields (recipient, amount_reversed, reversal status) are relied on.
+func isTransferEvent(_ string, entityType string) bool {
+	return strings.ToLower(strings.TrimSpace(entityType)) == "transfer"
+}
+
+// isReversalEvent classifies by Razorpay entity type only ("reversal").
+// No reversal webhook event names are hardcoded.
+func isReversalEvent(_ string, entityType string) bool {
+	return strings.ToLower(strings.TrimSpace(entityType)) == "reversal"
+}
+
+// MarketplaceEdgesFromTransfers maps Route transfer DTOs onto reference-only
+// graph edges. seller_id prefers recipient else account; empty stays empty.
+// amount_minor is correlation only — never bank cash / never MATCHED.
+func MarketplaceEdgesFromTransfers(paymentID, refundID string, transfers []razorpay.TransferResponse) []recon.MarketplaceTransferEdge {
+	paymentID = strings.TrimSpace(paymentID)
+	refundID = strings.TrimSpace(refundID)
+	var out []recon.MarketplaceTransferEdge
+	for _, t := range transfers {
+		id := strings.TrimSpace(t.ID)
+		if id == "" {
+			continue
+		}
+		pay := paymentID
+		if pay == "" {
+			pay = strings.TrimSpace(t.Source)
+		}
+		cur := strings.TrimSpace(t.Currency)
+		if cur == "" {
+			cur = "INR"
+		}
+		e := recon.MarketplaceTransferEdge{
+			TransferID:  id,
+			PaymentID:   pay,
+			RefundID:    refundID,
+			SellerID:    razorpay.SellerIDFromTransfer(t),
+			AmountMinor: t.Amount,
+			Currency:    cur,
+			TransferAt:  razorpay.TransferCreatedAt(t.CreatedAt),
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
+// NormalizeTransferEdge maps transfer.* / reversal observations onto an edge upsert.
+// Forward transfer: ProviderEntityID = transfer_id.
+// Reversal: ReverseTransferID on envelope (or ProviderEntityID) + TransferID parent.
+func NormalizeTransferEdge(env Envelope) (recon.MarketplaceTransferEdge, bool, error) {
+	if isReversalEvent(env.ProviderEventType, env.ProviderEntityType) {
+		transferID := strings.TrimSpace(env.TransferID)
+		reverseID := strings.TrimSpace(env.ReverseTransferID)
+		if reverseID == "" {
+			reverseID = strings.TrimSpace(env.ProviderEntityID)
+		}
+		if transferID == "" || reverseID == "" {
+			return recon.MarketplaceTransferEdge{}, false, fmt.Errorf("reversal requires transfer_id and reverse id")
+		}
+		var reverseAt time.Time
+		if env.ProviderCreatedAt != nil {
+			reverseAt = env.ProviderCreatedAt.UTC()
+		}
+		cur := strings.TrimSpace(env.Currency)
+		if cur == "" {
+			cur = "INR"
+		}
+		// AmountMinor left 0 so Upsert coalesce keeps the forward transfer amount.
+		return recon.MarketplaceTransferEdge{
+			TransferID:        transferID,
+			ReverseTransferID: reverseID,
+			PaymentID:         strings.TrimSpace(env.PaymentID),
+			RefundID:          "",
+			SellerID:          strings.TrimSpace(env.SellerID),
+			Currency:          cur,
+			ReverseAt:         reverseAt,
+		}, true, nil
+	}
+	if !isTransferEvent(env.ProviderEventType, env.ProviderEntityType) {
+		return recon.MarketplaceTransferEdge{}, false, nil
+	}
+	id := strings.TrimSpace(env.TransferID)
+	if id == "" {
+		id = strings.TrimSpace(env.ProviderEntityID)
+	}
+	if id == "" {
+		return recon.MarketplaceTransferEdge{}, false, fmt.Errorf("missing transfer id")
+	}
+	var transferAt time.Time
+	if env.ProviderCreatedAt != nil {
+		transferAt = env.ProviderCreatedAt.UTC()
+	}
+	cur := strings.TrimSpace(env.Currency)
+	if cur == "" {
+		cur = "INR"
+	}
+	return recon.MarketplaceTransferEdge{
+		TransferID:        id,
+		ReverseTransferID: strings.TrimSpace(env.ReverseTransferID),
+		PaymentID:         strings.TrimSpace(env.PaymentID),
+		SellerID:          strings.TrimSpace(env.SellerID),
+		AmountMinor:       env.Amount,
+		Currency:          cur,
+		TransferAt:        transferAt,
+	}, true, nil
+}

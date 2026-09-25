@@ -1,5 +1,7 @@
 import type { PayoutReconDisplayRow } from './payoutReconCopy'
 import { normalizePayoutStatus } from './payoutReconCopy'
+import { isBankProvenReconciled } from './payoutReconCopy'
+import { isPendingSellerReverseTransfer } from './payoutReconCopy'
 
 type PayoutDetailLike = {
   id: string
@@ -207,6 +209,8 @@ function exceptionTypeFor(kind: string, row: PayoutReconDisplayRow): string | nu
 }
 
 function exposureFor(kind: string, row: PayoutReconDisplayRow): number {
+  // Refund awaiting seller reverse transfer — not a cash gap, never exposure.
+  if (isPendingSellerReverseTransfer(row)) return 0
   if (kind === 'failed_clean' || kind === 'failed_reversed' || kind === 'bank_fail_reversed') return 0
   if (kind === 'queued_cancelled' || kind === 'pending_rejected' || kind === 'scheduled_insufficient') return 0
   if (kind === 'processed' || kind === 'stuck_passed' || kind === 'queued_success' || kind === 'failed_then_reversed') {
@@ -221,6 +225,12 @@ export function buildPayoutLifecycle(row: PayoutReconDisplayRow): PayoutLifecycl
   const kind = scenarioKey(row)
   const status = normalizePayoutStatus(row.status) || String(row.status)
   const result = String(row.result || 'UNRESOLVED').toUpperCase()
+  const bankProvenClose = isBankProvenReconciled({
+    result,
+    bank: row.bank,
+    bankCreditProven: row.bankCreditProven,
+    threeWay: row.threeWay,
+  })
   const created = row.createdAt && Number.isFinite(row.createdAt) ? row.createdAt : 1_717_977_678
   const t = (...offsets: number[]) => created + offsets.reduce((a, b) => a + b, 0)
   const bankNameLabel = bankName(row.paymentProvider)
@@ -535,25 +545,31 @@ export function buildPayoutLifecycle(row: PayoutReconDisplayRow): PayoutLifecycl
    */
   if (!terminalFailed) {
     const reconState: LifecycleEventState =
-      result === 'MATCHED' ? 'done' : result === 'AMBIGUOUS' ? 'current' : 'warn'
+      bankProvenClose ? 'done' : result === 'MATCHED' ? 'current' : result === 'AMBIGUOUS' ? 'current' : 'warn'
     events.push({
       id: 'recon',
-      title: result === 'MATCHED' ? 'Reconciled' : `Reconciliation ${result}`,
+      title: bankProvenClose
+        ? 'Reconciled'
+        : result === 'MATCHED'
+          ? 'Books/PSP matched — bank unproven'
+          : `Reconciliation ${result}`,
       timeLabel: timeOnly(t(847)),
       state: reconState,
-      summary:
-        result === 'MATCHED'
-          ? 'All sources agree. Financial movement is accounted for.'
+      summary: bankProvenClose
+        ? 'Close MATCHED with bank proof. Cash movement is accounted for.'
+        : result === 'MATCHED'
+          ? 'Books agree with PSP. Bank cash is not proven — not money in bank.'
           : `${exceptionType || result}. Provider status stays ${status}.`,
       facts: [
         { label: 'Provider status', value: status },
-        { label: 'Reconciliation', value: result },
+        { label: 'Close result', value: result },
+        { label: 'Bank proven', value: bankProvenClose ? 'yes' : 'no' },
         { label: 'Exception', value: exceptionType || 'NONE' },
         { label: 'Exposure', value: String(exposure) },
       ],
     })
 
-    if (result === 'MATCHED' || kind === 'processed' || kind === 'stuck_passed') {
+    if (bankProvenClose || kind === 'processed' || kind === 'stuck_passed') {
       events.push({
         id: 'sealed',
         title: 'Evidence sealed',
@@ -600,7 +616,7 @@ export function buildPayoutLifecycle(row: PayoutReconDisplayRow): PayoutLifecycl
     { stage: 'Acknowledged', provider: 'yes', bank: 'na', webhook: 'yes', ledger: 'na' },
     { stage: 'Processing', provider: processingKinds.has(kind) ? 'yes' : 'na', bank: 'na', webhook: processingKinds.has(kind) ? 'yes' : 'na', ledger: 'na' },
     { stage: 'Credited', provider: bankYes === 'yes' ? 'yes' : 'no', bank: bankYes, webhook: bankYes === 'yes' ? 'yes' : 'no', ledger: bankYes === 'yes' ? 'yes' : 'no' },
-    { stage: 'Reconciled', provider: 'na', bank: result === 'MATCHED' ? 'yes' : 'no', webhook: 'na', ledger: 'yes' },
+    { stage: 'Reconciled', provider: 'na', bank: bankProvenClose ? 'yes' : 'no', webhook: 'na', ledger: 'yes' },
   ]
 
   const moneyNodes: MoneyNode[] = [
@@ -621,13 +637,13 @@ export function buildPayoutLifecycle(row: PayoutReconDisplayRow): PayoutLifecycl
     },
     {
       id: 'end',
-      label: result === 'MATCHED' ? 'Accounted' : exposure > 0 ? 'Unaccounted' : 'Open',
+      label: bankProvenClose ? 'Accounted' : exposure > 0 ? 'Unaccounted' : result === 'MATCHED' ? 'Books matched' : 'Open',
       sub: result,
     },
   ]
 
   const outcome: PayoutLifecycle['money']['outcome'] =
-    result === 'MATCHED' ? 'accounted' : exposure > 0 ? 'unaccounted' : 'in_flight'
+    bankProvenClose ? 'accounted' : exposure > 0 ? 'unaccounted' : 'in_flight'
 
   const attempts: AttemptRow[] = [
     {

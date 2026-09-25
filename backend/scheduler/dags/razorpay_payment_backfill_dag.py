@@ -1,13 +1,18 @@
 """
 Razorpay payment backfill DAG.
 
+BACKUP TIMER ONLY — Clearline event-first path is signal_recon_dag
+(ERP commit / refund / bank file Assets). This timedelta schedule remains
+as a safety net until/alongside signals; do not treat it as the primary wake.
+
 Schedules a bounded overlapping payment window and calls zord-outcome-engine.
 Never talks to Razorpay APIs directly.
 """
 
+
 from datetime import datetime, timedelta, timezone
 from airflow.sdk import DAG, Variable
-from airflow.providers.standard.operators.python import PythonOperator
+from airflow.providers.standard.operators.python import PythonOperator, ShortCircuitOperator
 from airflow.providers.http.sensors.http import HttpSensor
 
 import sys
@@ -15,6 +20,9 @@ import os
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 sys.path.insert(0, '/opt/airflow/plugins')
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'plugins')))
+
+from signals.banking_calendar import timer_should_run
 
 from operators.zord_backfill_operator import (
     ZORD_OUTCOME_ENGINE_CONN_ID,
@@ -35,12 +43,20 @@ with DAG(
     dag_id="razorpay_payment_backfill_dag",
     default_args=default_args,
     description="Razorpay payment API backfill via outcome-engine",
+    # BACKUP timer — prefer signal_recon_dag Assets
     schedule=timedelta(minutes=15),
     start_date=datetime(2026, 1, 1),
     catchup=False,
     max_active_runs=1,
-    tags=["zord", "razorpay", "backfill"],
+    tags=["backup", "timer", "zord", "razorpay", "backfill"],
 ) as dag:
+
+    # Banking-day gate: weekends + reference holidays skip the whole run,
+    # same rule as signal_recon_dag.
+    banking_day_gate = ShortCircuitOperator(
+        task_id="banking_day_gate",
+        python_callable=timer_should_run,
+    )
 
     check_health = HttpSensor(
         task_id="check_outcome_engine_health",
@@ -78,4 +94,4 @@ with DAG(
         python_callable=run_freshness_check,
     )
 
-    check_health >> create_job >> wait_job >> freshness
+    banking_day_gate >> check_health >> create_job >> wait_job >> freshness

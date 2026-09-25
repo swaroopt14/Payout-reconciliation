@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
+	"strings"
 	"time"
 
 	"zord-edge/db"
@@ -180,28 +182,24 @@ func (s *RazorpayWebhookService) ParseMetadata(rawBody []byte) (model.WebhookMet
 
 	var payload map[string]json.RawMessage
 	if err := json.Unmarshal(event.Payload, &payload); err == nil {
-		keys := make([]string, 0, len(payload))
-		if _, ok := payload["payment"]; ok {
-			keys = append(keys, "payment")
-		}
-		for entityType := range payload {
-			if entityType != "payment" {
-				keys = append(keys, entityType)
-			}
-		}
+		keys := orderedPayloadKeys(event.Event, payload)
 		for _, entityType := range keys {
 			entityRaw := payload[entityType]
 			var wrapper struct {
 				Entity struct {
-					ID       string `json:"id"`
-					Entity   string `json:"entity"`
-					Amount   int64  `json:"amount"`
-					Currency string `json:"currency"`
-					Status   string `json:"status"`
-					OrderID  string `json:"order_id"`
-					Captured bool   `json:"captured"`
-					Fee      int64  `json:"fee"`
-					Tax      int64  `json:"tax"`
+					ID         string `json:"id"`
+					Entity     string `json:"entity"`
+					Amount     int64  `json:"amount"`
+					Currency   string `json:"currency"`
+					Status     string `json:"status"`
+					OrderID    string `json:"order_id"`
+					Captured   bool   `json:"captured"`
+					Fee        int64  `json:"fee"`
+					Tax        int64  `json:"tax"`
+					Source     string `json:"source"`
+					Recipient  string `json:"recipient"`
+					Account    string `json:"account"`
+					TransferID string `json:"transfer_id"`
 				} `json:"entity"`
 				ID string `json:"id"`
 			}
@@ -216,6 +214,15 @@ func (s *RazorpayWebhookService) ParseMetadata(rawBody []byte) (model.WebhookMet
 				continue
 			}
 			meta.EntityType = entityType
+			// Route entities: provider_entity_type must be the Razorpay entity
+			// type ("transfer" / "reversal") — recon observe classifies transfer
+			// and reversal envelopes by entity type ONLY and ignores envelopes
+			// without it. Prefer the entity's own "entity" field, else the key.
+			if ent := routeEntityType(wrapper.Entity.Entity); ent != "" {
+				meta.EntityType = ent
+			} else if ent := routeEntityType(entityType); ent != "" {
+				meta.EntityType = ent
+			}
 			meta.EntityID = id
 			meta.AmountMinor = wrapper.Entity.Amount
 			meta.Currency = wrapper.Entity.Currency
@@ -224,11 +231,71 @@ func (s *RazorpayWebhookService) ParseMetadata(rawBody []byte) (model.WebhookMet
 			meta.Captured = wrapper.Entity.Captured
 			meta.FeeMinor = wrapper.Entity.Fee
 			meta.TaxMinor = wrapper.Entity.Tax
+			switch meta.EntityType {
+			case "transfer":
+				meta.TransferID = id
+				if src := strings.TrimSpace(wrapper.Entity.Source); strings.HasPrefix(src, "pay_") {
+					meta.PaymentID = src
+				}
+				if s := strings.TrimSpace(wrapper.Entity.Recipient); s != "" {
+					meta.SellerID = s
+				} else {
+					meta.SellerID = strings.TrimSpace(wrapper.Entity.Account)
+				}
+			case "reversal":
+				meta.ReverseTransferID = id
+				meta.TransferID = strings.TrimSpace(wrapper.Entity.TransferID)
+			}
 			break
 		}
 	}
 
 	return meta, nil
+}
+
+// routeEntityType normalizes a Razorpay Route entity type. Returns "" for
+// anything other than "transfer" / "reversal".
+func routeEntityType(v string) string {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "transfer":
+		return "transfer"
+	case "reversal":
+		return "reversal"
+	}
+	return ""
+}
+
+// orderedPayloadKeys returns payload entity keys in extraction order.
+// Default: "payment" first, then the rest (unchanged legacy behavior).
+// For Route events (transfer.* / reversal.*) the Route entity wins over any
+// accompanying payment entity: "reversal" first (a reversal entity carries the
+// rvrsl_ id plus parent transfer_id), then "transfer", then "payment".
+// So transfer.reversed is classified by its payload entity: a reversal entity
+// → provider_entity_type "reversal"; only a transfer entity → "transfer".
+func orderedPayloadKeys(eventType string, payload map[string]json.RawMessage) []string {
+	var priority []string
+	et := strings.ToLower(strings.TrimSpace(eventType))
+	if strings.HasPrefix(et, "transfer.") || strings.HasPrefix(et, "reversal.") {
+		priority = []string{"reversal", "transfer", "payment"}
+	} else {
+		priority = []string{"payment"}
+	}
+	keys := make([]string, 0, len(payload))
+	seen := map[string]bool{}
+	for _, k := range priority {
+		if _, ok := payload[k]; ok {
+			keys = append(keys, k)
+			seen[k] = true
+		}
+	}
+	rest := make([]string, 0, len(payload))
+	for k := range payload {
+		if !seen[k] {
+			rest = append(rest, k)
+		}
+	}
+	sort.Strings(rest)
+	return append(keys, rest...)
 }
 
 // GetReceipt retrieves a receipt by ID.

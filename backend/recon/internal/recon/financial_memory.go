@@ -27,6 +27,8 @@ type MemoryFinancialStore struct {
 	Outbox         []models.OutboxRow
 	Refunds        []RefundFact
 	refundScopes   map[string]string // refund_id -> tenant|connector for isolation
+	TransferEdges  []MarketplaceTransferEdge
+	edgeScopes     map[string]string // transfer_id -> tenant|connector for isolation
 	MerchantBooks  []MerchantBookFact
 	heldRuns       map[string]struct{}
 }
@@ -315,4 +317,88 @@ func (m *MemoryFinancialStore) InsertMatchOutbox(_ context.Context, row models.O
 	defer m.mu.Unlock()
 	m.Outbox = append(m.Outbox, row)
 	return nil
+}
+
+func (m *MemoryFinancialStore) ListTransferEdges(_ context.Context, tenantID, connectorID string) ([]MarketplaceTransferEdge, error) {
+	scope := refundScopeKey(tenantID, connectorID)
+	var out []MarketplaceTransferEdge
+	for _, e := range m.TransferEdges {
+		// Prefer denormalized tenant/connector on the edge (UNIQUE tenant+connector+transfer_id).
+		if strings.TrimSpace(e.TenantID) != "" || strings.TrimSpace(e.ConnectorID) != "" {
+			if refundScopeKey(e.TenantID, e.ConnectorID) != scope {
+				continue
+			}
+		} else if m.edgeScopes != nil {
+			key := scope + "|" + e.TransferID
+			if m.edgeScopes[key] != scope && m.edgeScopes[e.TransferID] != scope {
+				continue
+			}
+		}
+		out = append(out, e)
+	}
+	return out, nil
+}
+
+func (m *MemoryFinancialStore) UpsertTransferEdge(_ context.Context, tenantID, connectorID string, e MarketplaceTransferEdge) (MarketplaceTransferEdge, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if e.ID == "" {
+		e.ID = uuid.Must(uuid.NewV7()).String()
+	}
+	e.TenantID = tenantID
+	e.ConnectorID = connectorID
+	e.TransferID = strings.TrimSpace(e.TransferID)
+	e.ReverseTransferID = strings.TrimSpace(e.ReverseTransferID)
+	e.PaymentID = strings.TrimSpace(e.PaymentID)
+	e.RefundID = strings.TrimSpace(e.RefundID)
+	e.SellerID = strings.TrimSpace(e.SellerID)
+	if e.Currency == "" {
+		e.Currency = "INR"
+	}
+	scope := refundScopeKey(tenantID, connectorID)
+	if m.edgeScopes == nil {
+		m.edgeScopes = map[string]string{}
+	}
+	scopeKey := scope + "|" + e.TransferID
+	if e.TransferID != "" {
+		m.edgeScopes[scopeKey] = scope
+		// Keep legacy transfer_id index for List filter compatibility.
+		m.edgeScopes[e.TransferID] = scope
+	}
+	for i := range m.TransferEdges {
+		prev := m.TransferEdges[i]
+		if prev.TransferID == "" || prev.TransferID != e.TransferID {
+			continue
+		}
+		if refundScopeKey(prev.TenantID, prev.ConnectorID) != scope {
+			continue
+		}
+		// Enrichment-safe coalesce (mirror SQL ON CONFLICT).
+		if e.ReverseTransferID == "" && prev.ReverseTransferID != "" {
+			e.ReverseTransferID = prev.ReverseTransferID
+		}
+		if e.ReverseAt.IsZero() && !prev.ReverseAt.IsZero() {
+			e.ReverseAt = prev.ReverseAt
+		}
+		if e.PaymentID == "" && prev.PaymentID != "" {
+			e.PaymentID = prev.PaymentID
+		}
+		if e.RefundID == "" && prev.RefundID != "" {
+			e.RefundID = prev.RefundID
+		}
+		if e.SellerID == "" && prev.SellerID != "" {
+			e.SellerID = prev.SellerID
+		}
+		if e.AmountMinor == 0 && prev.AmountMinor != 0 {
+			e.AmountMinor = prev.AmountMinor
+		}
+		if e.TransferAt.IsZero() && !prev.TransferAt.IsZero() {
+			e.TransferAt = prev.TransferAt
+		}
+		e.ID = prev.ID
+		m.TransferEdges[i] = e
+		return e, nil
+	}
+	m.TransferEdges = append(m.TransferEdges, e)
+	return e, nil
 }

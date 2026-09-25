@@ -179,6 +179,22 @@ func main() {
 
 	reconStore := persistence.NewReconSQLStore(db.DB)
 	observationProc.Refunds = reconStore
+	// Live marketplace graph: Refunds sink alone does not persist transfer edges.
+	observationProc.Edges = reconStore
+	{
+		mode := os.Getenv("RAZORPAY_MODE")
+		if mode == "" {
+			mode = "test"
+		}
+		cfg, err := poll.EnvCredentialResolver{}.Resolve(context.Background(), "", "", mode)
+		if err != nil {
+			log.Printf("observe: razorpay transfers lookup disabled (seller_id/edges from envelope only): %v", err)
+		} else if rzp, err := razorpay.NewClient(cfg, nil, nil, nil); err != nil {
+			log.Printf("observe: razorpay transfers client init failed: %v", err)
+		} else {
+			observationProc.Transfers = rzp
+		}
+	}
 	reconSvc := recon.NewService(reconStore)
 	financialSvc := recon.NewFinancialService(reconStore)
 	importSvc := imports.NewService(persistence.NewImportSQLStore(db.DB))

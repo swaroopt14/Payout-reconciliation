@@ -4,10 +4,12 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"zord-prompt-layer/agents/briefing"
 )
 
 var evRe = regexp.MustCompile(`ev_[A-Za-z0-9_-]+`)
-var numRe = regexp.MustCompile(`\b\d{3,}\b`)
+var numRe = regexp.MustCompile(`\b\d+\b`)
 
 func Validate(answer string, ctx FinanceContext) (string, []string) {
 	var extra []string
@@ -17,6 +19,10 @@ func Validate(answer string, ctx FinanceContext) (string, []string) {
 	}
 	if !statusOK(answer, ctx) {
 		extra = append(extra, "Status or reconciliation wording rejected.")
+		return "", extra
+	}
+	if !projectionOK(answer) {
+		extra = append(extra, "Expected-cash wording rejected: expected cash is projected, not yet banked; MATCHED is not cash.")
 		return "", extra
 	}
 	cleaned, dropped := filterEvidenceIDs(answer, ctx.Evidence)
@@ -40,10 +46,23 @@ func numericOK(answer string, ctx FinanceContext) bool {
 	for _, c := range ctx.Calculations {
 		allowed[strconv.FormatInt(c.Output, 10)] = struct{}{}
 	}
-	for _, m := range numRe.FindAllString(answer, -1) {
-		if len(m) <= 3 {
-			continue
+	// Zero (absent structured value) is never an invented amount.
+	allowed["0"] = struct{}{}
+	// Derived match rate from the same structured counts the template uses.
+	if scored := factInt(ctx, "scored_count"); scored > 0 {
+		allowed[strconv.FormatInt(factInt(ctx, "matched_count")*100/scored, 10)] = struct{}{}
+	}
+	// Ordinal list markers in the investigation template (top 3 exceptions).
+	for i := 1; i <= len(ctx.Exceptions) && i <= 3; i++ {
+		allowed[strconv.Itoa(i)] = struct{}{}
+	}
+	// Numbers quoted verbatim from internal knowledge docs (e.g. SLA minutes).
+	for _, k := range ctx.Knowledge {
+		for _, n := range numRe.FindAllString(k.Text+" "+k.Title+" "+k.Version, -1) {
+			allowed[n] = struct{}{}
 		}
+	}
+	for _, m := range numRe.FindAllString(answer, -1) {
 		if _, ok := allowed[m]; !ok {
 			return false
 		}
@@ -81,6 +100,11 @@ func statusOK(answer string, ctx FinanceContext) bool {
 	return true
 }
 
+// projectionOK enforces expected-cash projection wording and MATCHED != cash.
+func projectionOK(answer string) bool {
+	return briefing.ExpectedCashWordingOK(answer) && !briefing.MatchedCalledCash(answer)
+}
+
 func filterEvidenceIDs(answer string, allowed []string) (string, bool) {
 	ok := map[string]struct{}{}
 	for _, id := range allowed {
@@ -114,7 +138,7 @@ func RejectRewrite(rewrite string, ctx FinanceContext) bool {
 	if rewrite == "" {
 		return true
 	}
-	if !numericOK(rewrite, ctx) || !statusOK(rewrite, ctx) || lossForbidden(rewrite, ctx) {
+	if !numericOK(rewrite, ctx) || !statusOK(rewrite, ctx) || !projectionOK(rewrite) || lossForbidden(rewrite, ctx) {
 		return true
 	}
 	if _, dropped := filterEvidenceIDs(rewrite, ctx.Evidence); dropped {

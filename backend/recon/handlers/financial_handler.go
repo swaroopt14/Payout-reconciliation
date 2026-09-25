@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -426,7 +427,14 @@ func (h *FinancialHandler) ListExceptions(c *gin.Context) {
 	if !ok {
 		return
 	}
-	list, err := h.Store.ListReconciliationExceptions(c.Request.Context(), tenantID, connectorID)
+	var list []recon.ReconciliationException
+	var err error
+	if h.Service != nil {
+		// Persisted recon exceptions + derived refund_without_reverse_transfer.
+		list, err = h.Service.ListExceptions(c.Request.Context(), tenantID, connectorID)
+	} else {
+		list, err = h.Store.ListReconciliationExceptions(c.Request.Context(), tenantID, connectorID)
+	}
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -455,7 +463,14 @@ func (h *FinancialHandler) GetException(c *gin.Context) {
 	if !ok {
 		return
 	}
-	ex, found, err := h.Store.GetReconciliationException(c.Request.Context(), tenantID, connectorID, c.Param("id"))
+	var ex recon.ReconciliationException
+	var found bool
+	var err error
+	if h.Service != nil {
+		ex, found, err = h.Service.GetException(c.Request.Context(), tenantID, connectorID, c.Param("id"))
+	} else {
+		ex, found, err = h.Store.GetReconciliationException(c.Request.Context(), tenantID, connectorID, c.Param("id"))
+	}
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "lookup_failed"})
 		return
@@ -761,6 +776,62 @@ func (h *FinancialHandler) ListMarketplaceSellerPatterns(c *gin.Context) {
 	}
 	if res.Sellers == nil {
 		res.Sellers = []recon.MarketplaceSellerPattern{}
+	}
+	c.JSON(http.StatusOK, res)
+}
+
+func (h *FinancialHandler) ListMarketplaceRefundGraphExceptions(c *gin.Context) {
+	tenantID, connectorID, ok := h.scope(c)
+	if !ok {
+		return
+	}
+	if h == nil || h.Service == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "financial recon not configured"})
+		return
+	}
+	res, err := h.Service.MarketplaceRefundGraphExceptions(c.Request.Context(), tenantID, connectorID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if res.Signals == nil {
+		res.Signals = []recon.MarketplaceRefundGraphSignal{}
+	}
+	c.JSON(http.StatusOK, res)
+}
+
+func (h *FinancialHandler) ListMarketplaceVelocityFlags(c *gin.Context) {
+	tenantID, connectorID, ok := h.scope(c)
+	if !ok {
+		return
+	}
+	if h == nil || h.Service == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "financial recon not configured"})
+		return
+	}
+	cfg := recon.MarketplaceVelocityConfig{
+		HoldEnabled: strings.EqualFold(strings.TrimSpace(c.Query("hold_enabled")), "true") ||
+			strings.TrimSpace(c.Query("hold_enabled")) == "1",
+	}
+	if v := strings.TrimSpace(c.Query("count_threshold")); v != "" {
+		var n int64
+		if _, err := fmt.Sscan(v, &n); err == nil {
+			cfg.CountThreshold = n
+		}
+	}
+	if v := strings.TrimSpace(c.Query("sum_threshold")); v != "" {
+		var n int64
+		if _, err := fmt.Sscan(v, &n); err == nil {
+			cfg.SumThreshold = n
+		}
+	}
+	res, err := h.Service.MarketplaceVelocityFlags(c.Request.Context(), tenantID, connectorID, cfg)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if res.Flags == nil {
+		res.Flags = []recon.MarketplaceVelocityFlag{}
 	}
 	c.JSON(http.StatusOK, res)
 }

@@ -57,6 +57,8 @@ downloads/
 eggs/
 .eggs/
 lib/
+# Console app code lives in src/shared/lib — keep it tracked (broad lib/ above is for Python packaging).
+!backend/console/src/shared/lib/
 lib64/
 parts/
 sdist/

@@ -19,7 +19,11 @@ import type {
   RazorpaySettlementOverview,
 } from '@/services/payout-command/prod-api/financeTypes'
 import { InfoDot, RZ_MUTED } from '../finance-ops/razorpayChrome'
-import { mapFinanceRowToPayoutRecon, sumPayoutKpis } from '../finance-ops/payoutReconCopy'
+import {
+  isPendingSellerReverseTransfer,
+  mapFinanceRowToPayoutRecon,
+  sumPayoutKpis,
+} from '../finance-ops/payoutReconCopy'
 import {
   exceptionSeverity,
   formatPaise,
@@ -161,7 +165,9 @@ export function OperationsOverviewSurface() {
 
   const visibleUpdates = updates.slice(updateIndex, updateIndex + 3)
 
-  const attention = [...exceptions]
+  // Pending seller reverse transfers are not cash gaps — keep them out of the money-ranked attention list.
+  const attention = exceptions
+    .filter((ex) => !isPendingSellerReverseTransfer(ex))
     .sort((a, b) => (b.variance_amount || 0) - (a.variance_amount || 0))
     .slice(0, 3)
 

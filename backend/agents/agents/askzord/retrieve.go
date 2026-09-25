@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 
+	"zord-prompt-layer/agents/briefing"
 	"zord-prompt-layer/tools"
 )
 
@@ -45,16 +46,20 @@ func Retrieve(c *tools.OutcomeClient, tenantID, connectorID string, plan QueryPl
 			"in_flight_minor", "unresolved_exposure_minor",
 		} {
 			if v, ok := cash[key]; ok {
+				if key == "settlement_expected_net_minor" {
+					addLabeledFact(&ctx, key, v, "INR", "settlement expected net "+briefing.ExpectedCashLabel)
+					continue
+				}
 				addFact(&ctx, key, v, "INR")
 			}
 		}
-		sch, _ := c.GetCashSchedule(tenantID, connectorID)
-		if kind, _ := sch["kind"].(string); kind != "" {
-			addFact(&ctx, "cash_schedule_kind", kind, "")
-		}
-		if v, ok := sch["unknown_timing_minor"]; ok {
-			addFact(&ctx, "unknown_timing_minor", v, "INR")
-		}
+	}
+
+	needOps := plan.Intent == IntentCashPosition || plan.Intent == IntentAggregate ||
+		plan.Intent == IntentInvestigation || plan.Intent == IntentReconciliation ||
+		isMorningOrOpsQuestion(plan.Filters["question"])
+	if needOps {
+		pullOpsCounselSurfaces(c, tenantID, connectorID, &ctx, plan)
 	}
 
 	if need("exception") || plan.Intent == IntentInvestigation || plan.Intent == IntentAggregate ||
@@ -269,6 +274,11 @@ func addFact(ctx *FinanceContext, field string, value any, currency string) {
 	ctx.Facts = append(ctx.Facts, Fact{Field: field, Value: value, Currency: currency})
 }
 
+// addLabeledFact attaches a user-facing label (used for expected-cash projection wording).
+func addLabeledFact(ctx *FinanceContext, field string, value any, currency, label string) {
+	ctx.Facts = append(ctx.Facts, Fact{Field: field, Value: value, Currency: currency, Label: label})
+}
+
 func setFact(ctx *FinanceContext, field string, value any, currency string) {
 	for i := range ctx.Facts {
 		if ctx.Facts[i].Field == field {
@@ -299,4 +309,117 @@ func noneRecord(body map[string]any) bool {
 		return true
 	}
 	return false
+}
+
+func isMorningOrOpsQuestion(q string) bool {
+	s := strings.ToLower(q)
+	for _, p := range []string{"morning", "briefing", "ops counsel", "next step", "what should i do"} {
+		if strings.Contains(s, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// pullOpsCounselSurfaces copies numeric fields from cash schedule / refund-graph /
+// velocity-flags only when present. HoldEnabled defaults false (no HoldRecommended).
+func pullOpsCounselSurfaces(c *tools.OutcomeClient, tenantID, connectorID string, ctx *FinanceContext, plan QueryPlan) {
+	holdEnabled := false
+	if plan.Filters != nil {
+		v := strings.ToLower(strings.TrimSpace(plan.Filters["hold_enabled"]))
+		holdEnabled = v == "true" || v == "1"
+	}
+
+	sch, _ := c.GetCashSchedule(tenantID, connectorID)
+	applyCashScheduleFacts(ctx, sch)
+
+	rg, _ := c.GetMarketplaceRefundGraphExceptions(tenantID, connectorID)
+	applyRefundGraphFacts(ctx, rg)
+
+	vf, _ := c.GetMarketplaceVelocityFlags(tenantID, connectorID, holdEnabled)
+	applyVelocityFacts(ctx, vf, holdEnabled)
+}
+
+func applyCashScheduleFacts(ctx *FinanceContext, sch map[string]any) {
+	if noneRecord(sch) {
+		ctx.Limitations = append(ctx.Limitations, "Cash schedule surface unavailable; "+briefing.ExpectedCashLabel+" schedule_projection clock omitted.")
+		return
+	}
+	if kind, _ := sch["kind"].(string); kind != "" {
+		addLabeledFact(ctx, "cash_schedule_kind", kind, "", kind+" ("+briefing.ExpectedCashLabel+")")
+	}
+	if v, ok := sch["unknown_timing_minor"]; ok {
+		addLabeledFact(ctx, "unknown_timing_minor", v, "INR", "expected cash, timing unknown (projected, not yet banked)")
+	}
+	days, _ := sch["days"].([]any)
+	if len(days) == 0 {
+		return
+	}
+	day, ok := days[0].(map[string]any)
+	if !ok {
+		return
+	}
+	if v, ok := day["expected_credit_minor"]; ok {
+		addLabeledFact(ctx, "expected_credit_minor", v, "INR", "next banking-day "+briefing.ExpectedCashLabel+" credit")
+	}
+	if v, ok := day["expected_debit_minor"]; ok {
+		addLabeledFact(ctx, "expected_debit_minor", v, "INR", "next banking-day "+briefing.ExpectedCashLabel+" debit")
+	}
+}
+
+func applyRefundGraphFacts(ctx *FinanceContext, body map[string]any) {
+	if noneRecord(body) {
+		ctx.Limitations = append(ctx.Limitations, "Refund-graph exceptions surface unavailable.")
+		return
+	}
+	signals, _ := body["signals"].([]any)
+	addFact(ctx, "refund_graph_signal_count", len(signals), "")
+	var withoutReverse int
+	for _, raw := range signals {
+		sig, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		reason, _ := sig["reason"].(string)
+		if reason == "refund_without_reverse_transfer" {
+			withoutReverse++
+		}
+		if v, ok := sig["amount_minor"]; ok {
+			// only copy present variance/amount fields; do not invent totals
+			_ = v
+		}
+	}
+	if withoutReverse > 0 {
+		addFact(ctx, "refund_without_reverse_count", withoutReverse, "")
+	}
+}
+
+func applyVelocityFacts(ctx *FinanceContext, body map[string]any, holdEnabled bool) {
+	if noneRecord(body) {
+		ctx.Limitations = append(ctx.Limitations, "Velocity flags surface unavailable.")
+		return
+	}
+	flags, _ := body["flags"].([]any)
+	addFact(ctx, "velocity_flag_count", len(flags), "")
+	if holdEnabled {
+		addFact(ctx, "hold_enabled", 1, "")
+	} else {
+		addFact(ctx, "hold_enabled", 0, "")
+	}
+	holdRec := 0
+	if holdEnabled {
+		for _, raw := range flags {
+			f, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			if hr, _ := f["hold_recommended"].(bool); hr {
+				holdRec++
+			}
+			if v, ok := f["refund_sum_minor"]; ok {
+				_ = v // present but not summed — avoid inventing aggregates
+			}
+		}
+	}
+	addFact(ctx, "hold_recommended_count", holdRec, "")
 }

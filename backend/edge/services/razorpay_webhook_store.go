@@ -170,6 +170,7 @@ func insertReceiptAndOutbox(ctx context.Context, tx *sql.Tx, in webhookPersistIn
 		"provider_created_at":  in.Metadata.ProviderCreatedAt,
 		"trace_id":             in.TraceID,
 	}
+	addRouteReferences(eventPayload, in.Metadata)
 	payloadJSON, _ := json.Marshal(eventPayload)
 
 	_, err = tx.ExecContext(ctx, `
@@ -377,4 +378,21 @@ func (m *MemoryWebhookStore) OutboxCount() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return len(m.Outbox)
+}
+
+// addRouteReferences adds Route (transfer / reversal) reference ids to the
+// provider.observation.received payload. Keys are only written when Razorpay
+// supplied the value, so payment/refund/payout payloads are unchanged.
+// provider_entity_type is already set from Metadata.EntityType ("transfer" /
+// "reversal" for Route entities) — recon observe classifies on it only.
+func addRouteReferences(p map[string]any, m model.WebhookMetadata) {
+	set := func(k, v string) {
+		if v != "" {
+			p[k] = v
+		}
+	}
+	set("transfer_id", m.TransferID)
+	set("reverse_transfer_id", m.ReverseTransferID)
+	set("payment_id", m.PaymentID)
+	set("seller_id", m.SellerID)
 }
