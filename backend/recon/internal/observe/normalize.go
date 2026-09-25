@@ -200,6 +200,7 @@ type reconRefund struct {
 
 // EnrichRefundWithTransfers sets SellerID from payment→transfers when present.
 // Leaves SellerID untouched when already set or when no transfer recipient/account exists.
+// A split payment (2+ distinct sellers) leaves SellerID empty — never guess.
 // Never invents a sentinel like "unknown".
 func EnrichRefundWithTransfers(item *reconRefund, transfers []razorpay.TransferResponse) {
 	if item == nil {
@@ -242,9 +243,12 @@ func isReversalEvent(_ string, entityType string) bool {
 // MarketplaceEdgesFromTransfers maps Route transfer DTOs onto reference-only
 // graph edges. seller_id prefers recipient else account; empty stays empty.
 // amount_minor is correlation only — never bank cash / never MATCHED.
-func MarketplaceEdgesFromTransfers(paymentID, refundID string, transfers []razorpay.TransferResponse) []recon.MarketplaceTransferEdge {
+// refund_id is stamped only on edges whose seller_id equals refundSellerID;
+// when refundSellerID is empty no edge gets a refund_id (edges still upsert).
+func MarketplaceEdgesFromTransfers(paymentID, refundID, refundSellerID string, transfers []razorpay.TransferResponse) []recon.MarketplaceTransferEdge {
 	paymentID = strings.TrimSpace(paymentID)
 	refundID = strings.TrimSpace(refundID)
+	refundSellerID = strings.TrimSpace(refundSellerID)
 	var out []recon.MarketplaceTransferEdge
 	for _, t := range transfers {
 		id := strings.TrimSpace(t.ID)
@@ -259,11 +263,16 @@ func MarketplaceEdgesFromTransfers(paymentID, refundID string, transfers []razor
 		if cur == "" {
 			cur = "INR"
 		}
+		seller := strings.TrimSpace(razorpay.SellerIDFromTransfer(t))
+		stamp := ""
+		if refundSellerID != "" && seller == refundSellerID {
+			stamp = refundID
+		}
 		e := recon.MarketplaceTransferEdge{
 			TransferID:  id,
 			PaymentID:   pay,
-			RefundID:    refundID,
-			SellerID:    razorpay.SellerIDFromTransfer(t),
+			RefundID:    stamp,
+			SellerID:    seller,
 			AmountMinor: t.Amount,
 			Currency:    cur,
 			TransferAt:  razorpay.TransferCreatedAt(t.CreatedAt),

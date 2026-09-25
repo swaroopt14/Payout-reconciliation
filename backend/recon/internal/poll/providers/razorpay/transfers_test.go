@@ -35,14 +35,26 @@ func TestSellerIDFromTransferEmptyWhenAbsent(t *testing.T) {
 	}
 }
 
-func TestSellerIDFromTransfersFirstNonEmpty(t *testing.T) {
-	got := SellerIDFromTransfers([]TransferResponse{
-		{},
-		{Recipient: "acc_first"},
-		{Recipient: "acc_second"},
-	})
-	if got != "acc_first" {
-		t.Fatalf("got %q", got)
+func TestSellerIDFromTransfers_MultiSellerLeavesEmpty(t *testing.T) {
+	cases := []struct {
+		name  string
+		items []TransferResponse
+		want  string
+	}{
+		{"one seller", []TransferResponse{{Recipient: "acc_A"}}, "acc_A"},
+		{"two distinct sellers", []TransferResponse{{Recipient: "acc_A"}, {Recipient: "acc_B"}}, ""},
+		{"two distinct sellers recipient and account", []TransferResponse{{Recipient: "acc_A"}, {Account: "acc_B"}}, ""},
+		{"same seller twice", []TransferResponse{{Recipient: "acc_A"}, {Account: " acc_A "}}, "acc_A"},
+		{"no transfers", nil, ""},
+		{"empty recipient plus one seller", []TransferResponse{{}, {Recipient: " "}, {Recipient: "acc_A"}}, "acc_A"},
+		{"empty between two distinct sellers", []TransferResponse{{Recipient: "acc_A"}, {}, {Recipient: "acc_B"}, {Recipient: "acc_A"}}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := SellerIDFromTransfers(tc.items); got != tc.want {
+				t.Fatalf("got %q want %q", got, tc.want)
+			}
+		})
 	}
 }
 

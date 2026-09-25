@@ -320,6 +320,8 @@ func (m *MemoryFinancialStore) InsertMatchOutbox(_ context.Context, row models.O
 }
 
 func (m *MemoryFinancialStore) ListTransferEdges(_ context.Context, tenantID, connectorID string) ([]MarketplaceTransferEdge, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	scope := refundScopeKey(tenantID, connectorID)
 	var out []MarketplaceTransferEdge
 	for _, e := range m.TransferEdges {
@@ -355,6 +357,8 @@ func (m *MemoryFinancialStore) UpsertTransferEdge(_ context.Context, tenantID, c
 	if e.Currency == "" {
 		e.Currency = "INR"
 	}
+	fromReversal := e.RefundIDFromReversal && e.RefundID != ""
+	e.RefundIDFromReversal = false
 	scope := refundScopeKey(tenantID, connectorID)
 	if m.edgeScopes == nil {
 		m.edgeScopes = map[string]string{}
@@ -383,7 +387,9 @@ func (m *MemoryFinancialStore) UpsertTransferEdge(_ context.Context, tenantID, c
 		if e.PaymentID == "" && prev.PaymentID != "" {
 			e.PaymentID = prev.PaymentID
 		}
-		if e.RefundID == "" && prev.RefundID != "" {
+		// refund_id: keep existing non-empty value unless the new one comes
+		// from a reversal's customer_refund_id (mirror SQL CASE).
+		if prev.RefundID != "" && !fromReversal {
 			e.RefundID = prev.RefundID
 		}
 		if e.SellerID == "" && prev.SellerID != "" {

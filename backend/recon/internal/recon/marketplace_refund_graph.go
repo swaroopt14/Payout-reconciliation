@@ -28,6 +28,10 @@ type MarketplaceTransferEdge struct {
 	TransferAt        time.Time `json:"transfer_at,omitempty"`
 	ReverseAt         time.Time `json:"reverse_at,omitempty"`
 	CreatedAt         time.Time `json:"created_at,omitempty"`
+	// RefundIDFromReversal marks RefundID as sourced from a Razorpay reversal's
+	// customer_refund_id. Only then may Upsert replace an existing non-empty
+	// refund_id; refund-observe stamps never overwrite. Not persisted.
+	RefundIDFromReversal bool `json:"-"`
 }
 
 // HasReverse reports whether this edge records a reverse_transfer_id.
@@ -102,7 +106,9 @@ type reverseKey struct {
 // Refunds without seller_id never join and never signal.
 func DetectRefundsWithoutReverse(refunds []RefundFact, edges []MarketplaceTransferEdge) []MarketplaceRefundGraphSignal {
 	hasReverse := map[reverseKey]struct{}{}
-	byRefund := map[string]struct{}{}
+	// byRefund: refund_id → sellers whose reversed edge carries it. A refund_id
+	// match is proof only when the edge seller equals the refund seller.
+	byRefund := map[string]map[string]struct{}{}
 	for _, e := range edges {
 		if !e.HasReverse() {
 			continue
@@ -112,8 +118,11 @@ func DetectRefundsWithoutReverse(refunds []RefundFact, edges []MarketplaceTransf
 		if sid != "" {
 			hasReverse[reverseKey{payment: pid, seller: sid}] = struct{}{}
 		}
-		if rid := strings.TrimSpace(e.RefundID); rid != "" {
-			byRefund[rid] = struct{}{}
+		if rid := strings.TrimSpace(e.RefundID); rid != "" && sid != "" {
+			if byRefund[rid] == nil {
+				byRefund[rid] = map[string]struct{}{}
+			}
+			byRefund[rid][sid] = struct{}{}
 		}
 	}
 
@@ -125,8 +134,10 @@ func DetectRefundsWithoutReverse(refunds []RefundFact, edges []MarketplaceTransf
 		sid := strings.TrimSpace(r.SellerID)
 		pid := strings.TrimSpace(r.PaymentID)
 		rid := strings.TrimSpace(r.RefundID)
-		if _, ok := byRefund[rid]; ok && rid != "" {
-			continue
+		if sellers, ok := byRefund[rid]; ok && rid != "" && sid != "" {
+			if _, same := sellers[sid]; same {
+				continue
+			}
 		}
 		if _, ok := hasReverse[reverseKey{payment: pid, seller: sid}]; ok {
 			continue

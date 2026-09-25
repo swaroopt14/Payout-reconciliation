@@ -43,14 +43,27 @@ func SellerIDFromTransfer(t TransferResponse) string {
 	return strings.TrimSpace(t.Account)
 }
 
-// SellerIDFromTransfers returns the first non-empty seller id across transfers.
+// SellerIDFromTransfers returns the single distinct non-empty seller id across
+// transfers. Empty recipients are ignored and duplicates of one seller count
+// once. When the payment is split across 2+ distinct sellers it returns ""
+// — never guess one seller for a split payment (the refund then stays out of
+// seller clusters and refund-graph detection).
 func SellerIDFromTransfers(items []TransferResponse) string {
+	seller := ""
 	for _, t := range items {
-		if s := SellerIDFromTransfer(t); s != "" {
-			return s
+		s := SellerIDFromTransfer(t)
+		if s == "" {
+			continue
+		}
+		if seller == "" {
+			seller = s
+			continue
+		}
+		if s != seller {
+			return ""
 		}
 	}
-	return ""
+	return seller
 }
 
 // ListTransfersForPayment calls GET /payments/{id}/transfers.

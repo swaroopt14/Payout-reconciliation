@@ -732,7 +732,19 @@ func (s *ReconSQLStore) UpsertTransferEdge(ctx context.Context, tenantID, connec
 	if !e.ReverseAt.IsZero() {
 		reverseAt = e.ReverseAt
 	}
-	_, err := s.db.ExecContext(ctx, `
+	fromReversal := e.RefundIDFromReversal && e.RefundID != ""
+	e.RefundIDFromReversal = false
+	_, err := s.db.ExecContext(ctx, upsertTransferEdgeSQL,
+		e.ID, tenantID, connectorID, e.TransferID, nullIfEmpty(e.ReverseTransferID), e.PaymentID, nullIfEmpty(e.RefundID),
+		e.SellerID, e.AmountMinor, nzCur(e.Currency), transferAt, reverseAt, fromReversal,
+	)
+	return e, err
+}
+
+// upsertTransferEdgeSQL: refund_id COALESCEs toward the existing non-empty
+// value; only $13 (refund_id from a reversal's customer_refund_id) may replace
+// it. Mirrors MemoryFinancialStore.UpsertTransferEdge.
+const upsertTransferEdgeSQL = `
 		INSERT INTO marketplace_transfer_edges (
 			id, tenant_id, connector_id, transfer_id, reverse_transfer_id, payment_id, refund_id,
 			seller_id, amount_minor, currency, transfer_at, reverse_at
@@ -740,15 +752,13 @@ func (s *ReconSQLStore) UpsertTransferEdge(ctx context.Context, tenantID, connec
 		ON CONFLICT (tenant_id, connector_id, transfer_id) DO UPDATE SET
 			reverse_transfer_id=COALESCE(NULLIF(EXCLUDED.reverse_transfer_id,''), marketplace_transfer_edges.reverse_transfer_id),
 			payment_id=COALESCE(NULLIF(EXCLUDED.payment_id,''), marketplace_transfer_edges.payment_id),
-			refund_id=COALESCE(NULLIF(EXCLUDED.refund_id,''), marketplace_transfer_edges.refund_id),
+			refund_id=CASE
+				WHEN $13::boolean AND NULLIF(EXCLUDED.refund_id,'') IS NOT NULL THEN EXCLUDED.refund_id
+				ELSE COALESCE(NULLIF(marketplace_transfer_edges.refund_id,''), NULLIF(EXCLUDED.refund_id,''))
+			END,
 			seller_id=COALESCE(NULLIF(EXCLUDED.seller_id,''), marketplace_transfer_edges.seller_id),
 			amount_minor=CASE WHEN EXCLUDED.amount_minor = 0 THEN marketplace_transfer_edges.amount_minor ELSE EXCLUDED.amount_minor END,
 			currency=EXCLUDED.currency,
 			transfer_at=COALESCE(EXCLUDED.transfer_at, marketplace_transfer_edges.transfer_at),
 			reverse_at=COALESCE(EXCLUDED.reverse_at, marketplace_transfer_edges.reverse_at),
-			updated_at=now()`,
-		e.ID, tenantID, connectorID, e.TransferID, nullIfEmpty(e.ReverseTransferID), e.PaymentID, nullIfEmpty(e.RefundID),
-		e.SellerID, e.AmountMinor, nzCur(e.Currency), transferAt, reverseAt,
-	)
-	return e, err
-}
+			updated_at=now()`

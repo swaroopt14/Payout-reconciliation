@@ -3,6 +3,7 @@ package observe
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -171,16 +172,16 @@ func (p *Processor) enrichRefundAndUpsertEdges(ctx context.Context, tenantID, co
 		EnrichRefundWithTransfers(item, transfers)
 	}
 	if needEdges {
-		return p.upsertEdgesFromTransfers(ctx, tenantID, connectorID, item.PaymentID, item.RefundID, transfers)
+		return p.upsertEdgesFromTransfers(ctx, tenantID, connectorID, item.PaymentID, item.RefundID, item.SellerID, transfers)
 	}
 	return nil
 }
 
-func (p *Processor) upsertEdgesFromTransfers(ctx context.Context, tenantID, connectorID, paymentID, refundID string, transfers []razorpay.TransferResponse) error {
+func (p *Processor) upsertEdgesFromTransfers(ctx context.Context, tenantID, connectorID, paymentID, refundID, refundSellerID string, transfers []razorpay.TransferResponse) error {
 	if p == nil || p.Edges == nil {
 		return nil
 	}
-	edges := MarketplaceEdgesFromTransfers(paymentID, refundID, transfers)
+	edges := MarketplaceEdgesFromTransfers(paymentID, refundID, refundSellerID, transfers)
 	var revLookup TransferReversalLookup
 	if r, ok := p.Transfers.(TransferReversalLookup); ok {
 		revLookup = r
@@ -195,8 +196,10 @@ func (p *Processor) upsertEdgesFromTransfers(ctx context.Context, tenantID, conn
 				r0 := revs[0]
 				e.ReverseTransferID = strings.TrimSpace(r0.ID)
 				e.ReverseAt = razorpay.TransferCreatedAt(r0.CreatedAt)
-				if strings.TrimSpace(e.RefundID) == "" {
-					e.RefundID = strings.TrimSpace(r0.CustomerRefundID)
+				// Razorpay customer_refund_id on the reversal is authoritative.
+				if crid := strings.TrimSpace(r0.CustomerRefundID); crid != "" {
+					e.RefundID = crid
+					e.RefundIDFromReversal = true
 				}
 			}
 		}
@@ -210,6 +213,10 @@ func (p *Processor) upsertEdgesFromTransfers(ctx context.Context, tenantID, conn
 func (p *Processor) applyTransferEdge(ctx context.Context, env Envelope) (Result, bool, error) {
 	e, ok, err := NormalizeTransferEdge(env)
 	if err != nil {
+		if isReversalEvent(env.ProviderEventType, env.ProviderEntityType) {
+			log.Printf("WARN observe: skipping reversal without transfer_id/reverse id tenant=%s connector=%s entity_id=%q err=%v",
+				env.TenantID, env.ConnectorID, env.ProviderEntityID, err)
+		}
 		return Result{Kind: ResultSkipped, EventType: env.ProviderEventType}, true, nil
 	}
 	if !ok {
